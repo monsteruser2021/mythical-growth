@@ -3,6 +3,7 @@
 import { signOut } from "firebase/auth";
 import {
   collection,
+  collectionGroup,
   doc,
   onSnapshot,
   runTransaction,
@@ -29,6 +30,7 @@ import {
   PROJECTS_COLLECTION,
   ledgerEntryFromSnapshot,
   projectFromSnapshot,
+  saleFromSnapshot,
   toMinorUnits,
   type CapitalContributionInput,
   type Currency,
@@ -36,6 +38,7 @@ import {
   type EnterpriseProject,
   type LedgerEntry,
   type ProjectDraft,
+  type SaleRecord,
   type SaleInput,
   type WorkspaceTab,
 } from "@/lib/enterprise";
@@ -67,6 +70,9 @@ export default function EnterpriseWorkspace() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("projects");
   const [projects, setProjects] = useState<EnterpriseProject[]>([]);
+  const [sales, setSales] = useState<SaleRecord[]>([]);
+  const [salesLoading, setSalesLoading] = useState(true);
+  const [salesError, setSalesError] = useState("");
   const [balances, setBalances] = useState<Record<Currency, number>>({ Bs: 0, "$": 0 });
   const [ledgerEntries, setLedgerEntries] = useState<LedgerEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -90,6 +96,29 @@ export default function EnterpriseWorkspace() {
         setSubscriptionError("No se pudo sincronizar Firestore. Revisa la conexión y los permisos de la base de datos.");
       },
     );
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      collectionGroup(db, "sales"),
+      (snapshot) => {
+        const saleRecords = snapshot.docs
+          .flatMap((saleDoc) => {
+            const projectRef = saleDoc.ref.parent.parent;
+            if (!projectRef || projectRef.parent.id !== PROJECTS_COLLECTION) return [];
+            return [saleFromSnapshot(saleDoc.id, projectRef.id, saleDoc.data())];
+          })
+          .sort((first, second) => (second.soldAt?.getTime() ?? 0) - (first.soldAt?.getTime() ?? 0));
+        setSales(saleRecords);
+        setSalesLoading(false);
+        setSalesError("");
+      },
+      () => {
+        setSalesLoading(false);
+        setSalesError("No se pudo cargar el historial de ventas. Revisa los permisos de Firestore.");
+      },
+    );
+    return unsubscribe;
   }, []);
 
   useEffect(() => {
@@ -297,6 +326,16 @@ export default function EnterpriseWorkspace() {
   const liquidatedProjects = projects
     .filter((project) => project.status === "liquidation" || project.availableUnits === 0)
     .sort((a, b) => a.name.localeCompare(b.name, "es"));
+  const projectById = new Map(projects.map((project) => [project.id, project]));
+  const salesForExport = sales.map((sale) => {
+    const project = projectById.get(sale.projectId);
+    return {
+      ...sale,
+      projectName: sale.projectName || project?.name || "Proyecto eliminado",
+      condition: sale.condition ?? project?.condition ?? null,
+      unitCost: sale.unitCost || project?.unitCost || 0,
+    };
+  });
 
   return (
     <main className="min-h-screen bg-transparent text-slate-100">
@@ -378,7 +417,15 @@ export default function EnterpriseWorkspace() {
             <InventoryTab loading={loading} onSell={registerSale} projects={activeProjects} />
           )}
           {activeTab === "history" && (
-            <HistoryTab allProjects={projects} loading={loading} projects={liquidatedProjects} />
+            <HistoryTab
+              allProjects={projects}
+              loading={loading}
+              onExportSuccess={() => setNotice({ kind: "success", message: "Historial de ventas exportado en CSV." })}
+              projects={liquidatedProjects}
+              sales={salesForExport}
+              salesError={salesError}
+              salesLoading={salesLoading}
+            />
           )}
           {activeTab === "finance" && (
             <FinanceTab
@@ -386,6 +433,7 @@ export default function EnterpriseWorkspace() {
               entries={ledgerEntries}
               error={financeError}
               loading={financeLoading}
+              onExportSuccess={() => setNotice({ kind: "success", message: "Balance financiero exportado en CSV." })}
               onAddCapital={addCapital}
               onExchange={exchangeCurrency}
             />

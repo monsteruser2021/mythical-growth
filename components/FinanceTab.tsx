@@ -21,12 +21,15 @@ import {
   type FinanceCategory,
   type LedgerEntry,
 } from "@/lib/enterprise";
+import ExportCsvButton from "@/components/ExportCsvButton";
+import type { CsvColumn } from "@/lib/exportCsv";
 
 type FinanceTabProps = {
   balances: Record<Currency, number>;
   entries: LedgerEntry[];
   loading: boolean;
   error: string;
+  onExportSuccess: () => void;
   onAddCapital: (input: CapitalContributionInput) => Promise<void>;
   onExchange: (input: CurrencyExchangeInput) => Promise<void>;
 };
@@ -39,11 +42,22 @@ const inputClass =
   "h-10 w-full rounded-lg border border-white/10 bg-slate-950/70 px-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-purple-400/70 focus:ring-2 focus:ring-purple-500/20 disabled:opacity-50";
 const labelClass = "mb-1.5 block text-xs font-medium text-slate-300";
 
+const financeCsvColumns: CsvColumn<LedgerEntry>[] = [
+  { header: "ID de Transacción", value: (entry) => entry.id },
+  { header: "Descripción", value: (entry) => entry.description },
+  { header: "Categoría (Inversión / Ganancia)", value: (entry) => entry.category === "investment" ? "Inversión" : "Ganancia" },
+  { header: "Moneda (Bs / $)", value: (entry) => entry.currency },
+  { header: "Monto", value: (entry) => (entry.amountMinor / 100).toFixed(2) },
+  { header: "Tipo (Ingreso / Egreso / Conversión)", value: (entry) => entry.operation === "currency_exchange" ? "Conversión" : entry.amountMinor < 0 ? "Egreso" : "Ingreso" },
+  { header: "Fecha", value: (entry) => entry.createdAt?.toISOString() ?? "" },
+];
+
 export default function FinanceTab({
   balances,
   entries,
   loading,
   error,
+  onExportSuccess,
   onAddCapital,
   onExchange,
 }: FinanceTabProps) {
@@ -278,22 +292,33 @@ export default function FinanceTab({
             <h3 className="text-sm font-semibold text-white">Libro de movimientos</h3>
             <p className="mt-1 text-xs text-slate-500">Registro cronológico protegido contra edición y borrado en la interfaz.</p>
           </div>
-          <div aria-label="Filtrar movimientos" className="flex items-center gap-1 rounded-lg border border-white/10 p-1" role="group">
-            {([
-              ["all", "Todos"],
-              ["investment", "Inversión"],
-              ["gain", "Ganancia"],
-            ] as const).map(([filter, label]) => (
-              <button
-                aria-pressed={categoryFilter === filter}
-                className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${categoryFilter === filter ? "bg-purple-600 text-white" : "text-slate-400 hover:text-white"}`}
-                key={filter}
-                onClick={() => setCategoryFilter(filter)}
-                type="button"
-              >
-                {label}
-              </button>
-            ))}
+          <div className="flex flex-wrap items-center gap-2">
+            <ExportCsvButton
+              columns={financeCsvColumns}
+              disabled={loading || Boolean(error)}
+              disabledLabel={error ? "Movimientos no disponibles" : undefined}
+              filenamePrefix="mythical-growth-balance-financiero"
+              label="Exportar balance financiero (CSV)"
+              onSuccess={onExportSuccess}
+              rows={entries}
+            />
+            <div aria-label="Filtrar movimientos" className="flex items-center gap-1 rounded-lg border border-white/10 p-1" role="group">
+              {([
+                ["all", "Todos"],
+                ["investment", "Inversión"],
+                ["gain", "Ganancia"],
+              ] as const).map(([filter, label]) => (
+                <button
+                  aria-pressed={categoryFilter === filter}
+                  className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${categoryFilter === filter ? "bg-purple-600 text-white" : "text-slate-400 hover:text-white"}`}
+                  key={filter}
+                  onClick={() => setCategoryFilter(filter)}
+                  type="button"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 

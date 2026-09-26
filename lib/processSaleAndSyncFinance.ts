@@ -86,6 +86,9 @@ export async function processSaleAndSyncFinance(
       updatedAt: serverTimestamp(),
     });
     transaction.set(saleRef, {
+      projectName: current.name,
+      condition: current.condition,
+      unitCost: current.unitCost,
       quantity: sale.quantity,
       unitPrice: saleUnitPrice,
       currency: current.currency,

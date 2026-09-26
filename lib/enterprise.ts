@@ -65,6 +65,20 @@ export type SaleInput = {
   unitPrice: number;
 };
 
+export type SaleRecord = {
+  id: string;
+  projectId: string;
+  projectName: string;
+  condition: ProductCondition | null;
+  quantity: number;
+  unitCost: number;
+  unitPrice: number;
+  currency: Currency;
+  capitalRecovered: number;
+  netProfit: number;
+  soldAt: Date | null;
+};
+
 export function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
@@ -155,5 +169,34 @@ export function ledgerEntryFromSnapshot(
     projectId: typeof data.projectId === "string" ? data.projectId : null,
     exchangeGroupId: typeof data.exchangeGroupId === "string" ? data.exchangeGroupId : null,
     createdAt,
+  };
+}
+
+export function saleFromSnapshot(
+  id: string,
+  projectId: string,
+  data: Record<string, unknown>,
+): SaleRecord {
+  const timestamp = data.soldAt;
+  const soldAt =
+    timestamp && typeof timestamp === "object" && "toDate" in timestamp &&
+    typeof timestamp.toDate === "function"
+      ? timestamp.toDate()
+      : timestamp instanceof Date
+        ? timestamp
+        : null;
+
+  return {
+    id,
+    projectId,
+    projectName: typeof data.projectName === "string" ? data.projectName : "",
+    condition: data.condition === "Usado" ? "Usado" : data.condition === "Nuevo" ? "Nuevo" : null,
+    quantity: Math.max(0, Math.floor(numberValue(data.quantity))),
+    unitCost: numberValue(data.unitCost),
+    unitPrice: numberValue(data.unitPrice),
+    currency: data.currency === "$" ? "$" : "Bs",
+    capitalRecovered: numberValue(data.capitalRecovered),
+    netProfit: numberValue(data.netProfit),
+    soldAt,
   };
 }

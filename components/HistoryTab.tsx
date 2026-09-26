@@ -5,12 +5,19 @@ import {
   formatMoney,
   type Currency,
   type EnterpriseProject,
+  type SaleRecord,
 } from "@/lib/enterprise";
+import ExportCsvButton from "@/components/ExportCsvButton";
+import type { CsvColumn } from "@/lib/exportCsv";
 
 type HistoryTabProps = {
   projects: EnterpriseProject[];
   allProjects: EnterpriseProject[];
+  sales: SaleRecord[];
+  salesLoading: boolean;
+  salesError: string;
   loading: boolean;
+  onExportSuccess: () => void;
 };
 
 type TotalsByCurrency = Record<Currency, number>;
@@ -34,7 +41,27 @@ function CurrencyTotals({ totals }: { totals: TotalsByCurrency }) {
   );
 }
 
-export default function HistoryTab({ projects, allProjects, loading }: HistoryTabProps) {
+const salesCsvColumns: CsvColumn<SaleRecord>[] = [
+  { header: "Nombre del Proyecto / Producto", value: (sale) => sale.projectName },
+  { header: "Condición (Nuevo/Usado)", value: (sale) => sale.condition ?? "" },
+  { header: "Unidades Vendidas", value: (sale) => sale.quantity },
+  { header: "Costo Unitario", value: (sale) => sale.unitCost.toFixed(2) },
+  { header: "Precio de Venta", value: (sale) => sale.unitPrice.toFixed(2) },
+  { header: "Capital Recuperado", value: (sale) => sale.capitalRecovered.toFixed(2) },
+  { header: "Ganancia Neta", value: (sale) => sale.netProfit.toFixed(2) },
+  { header: "Moneda (Bs/$)", value: (sale) => sale.currency },
+  { header: "Fecha de Cierre", value: (sale) => sale.soldAt?.toISOString() ?? "" },
+];
+
+export default function HistoryTab({
+  projects,
+  allProjects,
+  sales,
+  salesLoading,
+  salesError,
+  loading,
+  onExportSuccess,
+}: HistoryTabProps) {
   const mobilized = splitCurrencyTotals(allProjects, (project) => project.purchaseTotal);
   const activeStock = splitCurrencyTotals(
     allProjects.filter((project) => project.status === "active"),
@@ -50,15 +77,31 @@ export default function HistoryTab({ projects, allProjects, loading }: HistoryTa
 
   return (
     <section aria-labelledby="history-heading" className="py-8">
-      <div className="mb-6 flex items-start gap-3">
-        <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg bg-purple-600/15 text-purple-300">
-          <Archive aria-hidden="true" className="size-5" />
-        </span>
-        <div>
-          <h2 className="text-lg font-semibold text-white" id="history-heading">Historial y liquidados</h2>
-          <p className="mt-1 text-sm text-slate-400">Cierre de lotes y resultados financieros realizados.</p>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg bg-purple-600/15 text-purple-300">
+            <Archive aria-hidden="true" className="size-5" />
+          </span>
+          <div>
+            <h2 className="text-lg font-semibold text-white" id="history-heading">Historial y liquidados</h2>
+            <p className="mt-1 text-sm text-slate-400">Cierre de lotes y resultados financieros realizados.</p>
+          </div>
         </div>
+        <ExportCsvButton
+          columns={salesCsvColumns}
+          disabled={salesLoading || Boolean(salesError)}
+          disabledLabel={salesError ? "Ventas no disponibles" : undefined}
+          filenamePrefix="mythical-growth-historial-ventas"
+          label="Exportar historial de ventas (CSV)"
+          onSuccess={onExportSuccess}
+          rows={sales}
+        />
       </div>
+      {salesError && (
+        <p className="mb-5 rounded-lg border border-rose-400/20 bg-rose-400/10 px-3.5 py-3 text-sm text-rose-200" role="alert">
+          {salesError}
+        </p>
+      )}
 
       <div className="mb-9 grid gap-px overflow-hidden rounded-xl border border-white/10 bg-white/10 sm:grid-cols-3">
         {indicators.map(({ label, icon: Icon, totals }) => (
