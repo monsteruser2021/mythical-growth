@@ -24,7 +24,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="es"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full bg-slate-950 font-sans text-slate-100">
+      <body className="min-h-full font-sans text-slate-100">
         <AuthGuard>{children}</AuthGuard>
       </body>
     </html>

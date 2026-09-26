@@ -4,6 +4,7 @@ import { Calculator, CircleDollarSign, PackagePlus } from "lucide-react";
 import { FormEvent, useMemo, useState } from "react";
 import {
   formatMoney,
+  toMinorUnits,
   type Currency,
   type ProductCondition,
   type ProjectDraft,
@@ -36,8 +37,10 @@ export default function ProjectsTab({ onCreate }: ProjectsTabProps) {
     const total = Number(purchaseTotal);
     const units = Number(quantity);
     const price = Number(salePrice);
+    const totalMinor = toMinorUnits(total);
+    const priceMinor = toMinorUnits(price);
 
-    if (!name.trim() || !Number.isFinite(total) || total <= 0) {
+    if (!name.trim() || !Number.isFinite(total) || total <= 0 || !Number.isSafeInteger(totalMinor) || totalMinor < 1) {
       setError("Escribe un nombre y un costo total mayor que cero.");
       return;
     }
@@ -45,7 +48,7 @@ export default function ProjectsTab({ onCreate }: ProjectsTabProps) {
       setError("La cantidad debe ser un número entero de al menos una unidad.");
       return;
     }
-    if (!Number.isFinite(price) || price <= 0) {
+    if (!Number.isFinite(price) || price <= 0 || !Number.isSafeInteger(priceMinor) || priceMinor < 1) {
       setError("Define un precio de venta unitario mayor que cero.");
       return;
     }
@@ -66,8 +69,12 @@ export default function ProjectsTab({ onCreate }: ProjectsTabProps) {
       setSalePrice("");
       setCurrency("Bs");
       setCondition("Nuevo");
-    } catch {
-      setError("No se pudo guardar el proyecto. Revisa la conexión e inténtalo otra vez.");
+    } catch (createError) {
+      setError(
+        createError instanceof Error
+          ? createError.message
+          : "No se pudo guardar el proyecto. Revisa la conexión e inténtalo otra vez.",
+      );
     } finally {
       setSaving(false);
     }

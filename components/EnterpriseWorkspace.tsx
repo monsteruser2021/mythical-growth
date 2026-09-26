@@ -2,7 +2,6 @@
 
 import { signOut } from "firebase/auth";
 import {
-  addDoc,
   collection,
   doc,
   onSnapshot,
@@ -11,6 +10,7 @@ import {
 } from "firebase/firestore";
 import {
   Archive,
+  CircleDollarSign,
   Boxes,
   CheckCircle2,
   CircleAlert,
@@ -24,17 +24,26 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { auth, db } from "@/lib/firebase";
 import {
+  BALANCES_COLLECTION,
+  LEDGER_COLLECTION,
   PROJECTS_COLLECTION,
+  ledgerEntryFromSnapshot,
   projectFromSnapshot,
-  roundMoney,
+  toMinorUnits,
+  type CapitalContributionInput,
+  type Currency,
+  type CurrencyExchangeInput,
   type EnterpriseProject,
+  type LedgerEntry,
   type ProjectDraft,
   type SaleInput,
   type WorkspaceTab,
 } from "@/lib/enterprise";
 import HistoryTab from "@/components/HistoryTab";
 import InventoryTab from "@/components/InventoryTab";
+import FinanceTab from "@/components/FinanceTab";
 import ProjectsTab from "@/components/ProjectsTab";
+import { processSaleAndSyncFinance } from "@/lib/processSaleAndSyncFinance";
 
 type Notice = { kind: "success" | "error"; message: string };
 
@@ -42,14 +51,28 @@ const tabs: { id: WorkspaceTab; label: string; icon: typeof Lightbulb }[] = [
   { id: "projects", label: "Proyectos / Pipeline", icon: Lightbulb },
   { id: "inventory", label: "Inventario activo", icon: Boxes },
   { id: "history", label: "Historial y liquidados", icon: Archive },
+  { id: "finance", label: "Finanzas y balance", icon: CircleDollarSign },
 ];
+
+function balanceDocumentId(currency: Currency) {
+  return currency === "Bs" ? "VES" : "USD";
+}
+
+function readBalanceAmount(data: Record<string, unknown> | undefined) {
+  const amount = data?.amountMinor;
+  return typeof amount === "number" && Number.isSafeInteger(amount) ? amount : 0;
+}
 
 export default function EnterpriseWorkspace() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("projects");
   const [projects, setProjects] = useState<EnterpriseProject[]>([]);
+  const [balances, setBalances] = useState<Record<Currency, number>>({ Bs: 0, "$": 0 });
+  const [ledgerEntries, setLedgerEntries] = useState<LedgerEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [financeLoading, setFinanceLoading] = useState(true);
   const [subscriptionError, setSubscriptionError] = useState("");
+  const [financeError, setFinanceError] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
   const [signingOut, setSigningOut] = useState(false);
 
@@ -70,73 +93,191 @@ export default function EnterpriseWorkspace() {
   }, []);
 
   useEffect(() => {
+    const unsubscribeLedger = onSnapshot(
+      collection(db, LEDGER_COLLECTION),
+      (snapshot) => {
+        const entries = snapshot.docs
+          .map((entryDoc) => ledgerEntryFromSnapshot(entryDoc.id, entryDoc.data()))
+          .filter((entry): entry is LedgerEntry => entry !== null)
+          .sort((first, second) => (second.createdAt?.getTime() ?? 0) - (first.createdAt?.getTime() ?? 0));
+        setLedgerEntries(entries);
+        setFinanceLoading(false);
+        setFinanceError("");
+      },
+      () => {
+        setFinanceLoading(false);
+        setFinanceError("No se pudo sincronizar el libro financiero. Revisa la conexión y los permisos de Firestore.");
+      },
+    );
+    const unsubscribeBalances = onSnapshot(
+      collection(db, BALANCES_COLLECTION),
+      (snapshot) => {
+        const nextBalances: Record<Currency, number> = { Bs: 0, "$": 0 };
+        for (const balanceDoc of snapshot.docs) {
+          const currency: Currency | null = balanceDoc.id === "VES" ? "Bs" : balanceDoc.id === "USD" ? "$" : null;
+          if (currency) nextBalances[currency] = readBalanceAmount(balanceDoc.data());
+        }
+        setBalances(nextBalances);
+      },
+      () => setFinanceError("No se pudieron sincronizar los balances financieros."),
+    );
+    return () => {
+      unsubscribeLedger();
+      unsubscribeBalances();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!notice) return;
     const timeout = window.setTimeout(() => setNotice(null), 4500);
     return () => window.clearTimeout(timeout);
   }, [notice]);
 
   async function createProject(project: ProjectDraft) {
-    const unitCost = project.purchaseTotal / project.quantityPurchased;
-    await addDoc(collection(db, PROJECTS_COLLECTION), {
-      ...project,
-      unitCost,
-      availableUnits: project.quantityPurchased,
-      totalRevenue: 0,
-      capitalRecovered: 0,
-      netProfit: 0,
-      status: "active",
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
+    const projectRef = doc(collection(db, PROJECTS_COLLECTION));
+    const ledgerRef = doc(collection(db, LEDGER_COLLECTION));
+    const balanceRef = doc(db, BALANCES_COLLECTION, balanceDocumentId(project.currency));
+    const acquisitionMinor = toMinorUnits(project.purchaseTotal);
+    if (!Number.isSafeInteger(acquisitionMinor) || acquisitionMinor < 1) {
+      throw new Error("El costo de adquisición supera el importe admitido.");
+    }
+
+    await runTransaction(db, async (transaction) => {
+      const balanceSnapshot = await transaction.get(balanceRef);
+      const currentBalance = readBalanceAmount(balanceSnapshot.data());
+      if (currentBalance < acquisitionMinor) {
+        throw new Error(`Fondos insuficientes en ${project.currency}. Registra o convierte capital antes de activar este proyecto.`);
+      }
+
+      transaction.set(projectRef, {
+        ...project,
+        unitCost: project.purchaseTotal / project.quantityPurchased,
+        availableUnits: project.quantityPurchased,
+        totalRevenue: 0,
+        capitalRecovered: 0,
+        netProfit: 0,
+        status: "active",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      transaction.set(ledgerRef, {
+        category: "investment",
+        operation: "project_acquisition",
+        currency: project.currency,
+        amountMinor: -acquisitionMinor,
+        description: `Adquisición · ${project.name}`,
+        projectId: projectRef.id,
+        exchangeGroupId: null,
+        createdAt: serverTimestamp(),
+      });
+      transaction.set(balanceRef, {
+        currency: project.currency,
+        amountMinor: currentBalance - acquisitionMinor,
+        updatedAt: serverTimestamp(),
+      });
     });
     setNotice({ kind: "success", message: "Proyecto guardado y activado en inventario." });
     setActiveTab("inventory");
   }
 
   async function registerSale(project: EnterpriseProject, sale: SaleInput) {
-    const projectRef = doc(db, PROJECTS_COLLECTION, project.id);
-    const saleRef = doc(collection(db, PROJECTS_COLLECTION, project.id, "sales"));
+    await processSaleAndSyncFinance(db, project.id, sale);
+    setNotice({ kind: "success", message: "Venta registrada y stock actualizado." });
+  }
 
+  async function addCapital(input: CapitalContributionInput) {
+    if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor < 1) {
+      throw new Error("El aporte supera el importe admitido.");
+    }
+    const ledgerRef = doc(collection(db, LEDGER_COLLECTION));
+    const balanceRef = doc(db, BALANCES_COLLECTION, balanceDocumentId(input.currency));
     await runTransaction(db, async (transaction) => {
-      const projectSnapshot = await transaction.get(projectRef);
-      if (!projectSnapshot.exists()) throw new Error("El proyecto ya no existe.");
-
-      const current = projectFromSnapshot(projectSnapshot.id, projectSnapshot.data());
-      if (current.status !== "active") throw new Error("Este lote ya fue liquidado.");
-      if (!Number.isInteger(sale.quantity) || sale.quantity < 1 || sale.quantity > current.availableUnits) {
-        throw new Error("El stock cambió. Actualiza la cantidad e inténtalo otra vez.");
-      }
-      if (!Number.isFinite(sale.unitPrice) || sale.unitPrice <= 0) {
-        throw new Error("El precio de venta debe ser mayor que cero.");
-      }
-
-      const remainingUnits = current.availableUnits - sale.quantity;
-      const revenue = roundMoney(sale.unitPrice * sale.quantity);
-      const capitalRecovered = remainingUnits === 0
-        ? roundMoney(current.purchaseTotal - current.capitalRecovered)
-        : roundMoney(current.unitCost * sale.quantity);
-      const netProfit = roundMoney(revenue - capitalRecovered);
-
-      transaction.update(projectRef, {
-        availableUnits: remainingUnits,
-        salePriceUnit: sale.unitPrice,
-        totalRevenue: roundMoney(current.totalRevenue + revenue),
-        capitalRecovered: roundMoney(current.capitalRecovered + capitalRecovered),
-        netProfit: roundMoney(current.netProfit + netProfit),
-        status: remainingUnits === 0 ? "liquidation" : "active",
+      const balanceSnapshot = await transaction.get(balanceRef);
+      const nextBalance = readBalanceAmount(balanceSnapshot.data()) + input.amountMinor;
+      if (!Number.isSafeInteger(nextBalance)) throw new Error("El balance supera el importe contable admitido.");
+      transaction.set(ledgerRef, {
+        category: "investment",
+        operation: "capital_contribution",
+        currency: input.currency,
+        amountMinor: input.amountMinor,
+        description: input.description,
+        projectId: null,
+        exchangeGroupId: null,
+        createdAt: serverTimestamp(),
+      });
+      transaction.set(balanceRef, {
+        currency: input.currency,
+        amountMinor: nextBalance,
         updatedAt: serverTimestamp(),
       });
-      transaction.set(saleRef, {
-        quantity: sale.quantity,
-        unitPrice: sale.unitPrice,
-        currency: current.currency,
-        revenue,
-        capitalRecovered,
-        netProfit,
-        soldAt: serverTimestamp(),
+    });
+    setNotice({ kind: "success", message: `Aporte de ${input.currency} registrado en el libro financiero.` });
+  }
+
+  async function exchangeCurrency(input: CurrencyExchangeInput) {
+    if (input.sourceCurrency === input.targetCurrency) throw new Error("Selecciona monedas distintas para convertir.");
+    if (!Number.isSafeInteger(input.sourceAmountMinor) || !Number.isSafeInteger(input.targetAmountMinor) || input.sourceAmountMinor < 1 || input.targetAmountMinor < 1 || !Number.isFinite(input.rate) || input.rate <= 0) {
+      throw new Error("Los importes o la tasa de cambio no son válidos.");
+    }
+    const sourceLedgerRef = doc(collection(db, LEDGER_COLLECTION));
+    const targetLedgerRef = doc(collection(db, LEDGER_COLLECTION));
+    const exchangeGroupId = sourceLedgerRef.id;
+    const sourceBalanceRef = doc(db, BALANCES_COLLECTION, balanceDocumentId(input.sourceCurrency));
+    const targetBalanceRef = doc(db, BALANCES_COLLECTION, balanceDocumentId(input.targetCurrency));
+
+    await runTransaction(db, async (transaction) => {
+      const [sourceSnapshot, targetSnapshot] = await Promise.all([
+        transaction.get(sourceBalanceRef),
+        transaction.get(targetBalanceRef),
+      ]);
+      const sourceBalance = readBalanceAmount(sourceSnapshot.data());
+      const targetBalance = readBalanceAmount(targetSnapshot.data());
+      if (sourceBalance < input.sourceAmountMinor) {
+        throw new Error(`Saldo insuficiente en ${input.sourceCurrency} para completar el cambio.`);
+      }
+      if (!Number.isSafeInteger(targetBalance + input.targetAmountMinor)) {
+        throw new Error("El balance destino supera el importe contable admitido.");
+      }
+
+      transaction.set(sourceLedgerRef, {
+        category: "investment",
+        operation: "currency_exchange",
+        currency: input.sourceCurrency,
+        amountMinor: -input.sourceAmountMinor,
+        description: `${input.description} · entregado`,
+        projectId: null,
+        exchangeGroupId,
+        exchangeRate: input.rate,
+        counterpartCurrency: input.targetCurrency,
+        counterpartAmountMinor: input.targetAmountMinor,
+        createdAt: serverTimestamp(),
+      });
+      transaction.set(targetLedgerRef, {
+        category: "investment",
+        operation: "currency_exchange",
+        currency: input.targetCurrency,
+        amountMinor: input.targetAmountMinor,
+        description: `${input.description} · recibido`,
+        projectId: null,
+        exchangeGroupId,
+        exchangeRate: input.rate,
+        counterpartCurrency: input.sourceCurrency,
+        counterpartAmountMinor: input.sourceAmountMinor,
+        createdAt: serverTimestamp(),
+      });
+      transaction.set(sourceBalanceRef, {
+        currency: input.sourceCurrency,
+        amountMinor: sourceBalance - input.sourceAmountMinor,
+        updatedAt: serverTimestamp(),
+      });
+      transaction.set(targetBalanceRef, {
+        currency: input.targetCurrency,
+        amountMinor: targetBalance + input.targetAmountMinor,
+        updatedAt: serverTimestamp(),
       });
     });
 
-    setNotice({ kind: "success", message: "Venta registrada y stock actualizado." });
+    setNotice({ kind: "success", message: "Cambio de divisas registrado en ambas monedas." });
   }
 
   async function handleSignOut() {
@@ -158,8 +299,8 @@ export default function EnterpriseWorkspace() {
     .sort((a, b) => a.name.localeCompare(b.name, "es"));
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100">
-      <header className="border-b border-white/10 bg-slate-950">
+    <main className="min-h-screen bg-transparent text-slate-100">
+      <header className="border-b border-white/10 bg-purple-950/15 backdrop-blur-sm">
         <div className="mx-auto flex min-h-[72px] max-w-7xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
           <div className="flex min-w-0 items-center gap-3">
             <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-purple-600 text-white shadow-lg shadow-purple-950/40">
@@ -238,6 +379,16 @@ export default function EnterpriseWorkspace() {
           )}
           {activeTab === "history" && (
             <HistoryTab allProjects={projects} loading={loading} projects={liquidatedProjects} />
+          )}
+          {activeTab === "finance" && (
+            <FinanceTab
+              balances={balances}
+              entries={ledgerEntries}
+              error={financeError}
+              loading={financeLoading}
+              onAddCapital={addCapital}
+              onExchange={exchangeCurrency}
+            />
           )}
         </div>
       </div>
