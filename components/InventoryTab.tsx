@@ -1,12 +1,18 @@
 "use client";
 
 import { AlertTriangle, Boxes, CircleDollarSign, PackageCheck, X } from "lucide-react";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   formatMoney,
   type EnterpriseProject,
   type SaleInput,
 } from "@/lib/enterprise";
+import SearchAndFilters, {
+  type ConditionFilter,
+  type CurrencyFilter,
+} from "@/components/SearchAndFilters";
+import StockBadge from "@/components/StockBadge";
+import ConditionBadge from "@/components/ConditionBadge";
 
 type InventoryTabProps = {
   projects: EnterpriseProject[];
@@ -16,6 +22,18 @@ type InventoryTabProps = {
 
 export default function InventoryTab({ projects, loading, onSell }: InventoryTabProps) {
   const [selectedProject, setSelectedProject] = useState<EnterpriseProject | null>(null);
+  const [search, setSearch] = useState("");
+  const [condition, setCondition] = useState<ConditionFilter>("all");
+  const [currency, setCurrency] = useState<CurrencyFilter>("all");
+  const filteredProjects = useMemo(() => {
+    const normalizedSearch = search.trim().toLocaleLowerCase("es");
+    return projects.filter((project) => {
+      const matchesSearch = !normalizedSearch || project.name.toLocaleLowerCase("es").includes(normalizedSearch);
+      const matchesCondition = condition === "all" || project.condition === condition;
+      const matchesCurrency = currency === "all" || project.currency === currency;
+      return matchesSearch && matchesCondition && matchesCurrency;
+    });
+  }, [condition, currency, projects, search]);
 
   return (
     <section aria-labelledby="inventory-heading" className="py-8">
@@ -32,9 +50,19 @@ export default function InventoryTab({ projects, loading, onSell }: InventoryTab
           </div>
         </div>
         <span className="text-sm text-slate-500">
-          {projects.length} {projects.length === 1 ? "lote activo" : "lotes activos"}
+          {filteredProjects.length} de {projects.length} {projects.length === 1 ? "lote activo" : "lotes activos"}
         </span>
       </div>
+
+      <SearchAndFilters
+        condition={condition}
+        currency={currency}
+        id="inventory"
+        onConditionChange={setCondition}
+        onCurrencyChange={setCurrency}
+        onSearchChange={setSearch}
+        search={search}
+      />
 
       {loading ? (
         <div className="border-y border-white/10 py-12 text-center text-sm text-slate-400">
@@ -46,22 +74,26 @@ export default function InventoryTab({ projects, loading, onSell }: InventoryTab
           <p className="mt-3 text-sm font-medium text-slate-300">No hay lotes con stock disponible</p>
           <p className="mt-1 text-xs text-slate-500">Los proyectos activados aparecerán aquí.</p>
         </div>
+      ) : filteredProjects.length === 0 ? (
+        <div className="border-y border-white/10 py-12 text-center">
+          <p className="text-sm font-medium text-slate-300">No se encontraron resultados para los filtros seleccionados</p>
+          <button
+            className="mt-3 text-xs font-medium text-purple-300 hover:text-purple-200"
+            onClick={() => { setSearch(""); setCondition("all"); setCurrency("all"); }}
+            type="button"
+          >
+            Limpiar filtros
+          </button>
+        </div>
       ) : (
         <div className="divide-y divide-white/10 border-y border-white/10">
-          {projects.map((project) => (
+          {filteredProjects.map((project) => (
             <article className="grid gap-4 py-5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center" key={project.id}>
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2.5">
                   <h3 className="truncate font-medium text-white">{project.name}</h3>
-                  <span
-                    className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${
-                      project.condition === "Nuevo"
-                        ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-300"
-                        : "border-amber-400/20 bg-amber-400/10 text-amber-300"
-                    }`}
-                  >
-                    {project.condition}
-                  </span>
+                  <ConditionBadge condition={project.condition} />
+                  <StockBadge availableUnits={project.availableUnits} />
                 </div>
                 <p className="mt-2 text-sm text-slate-400">
                   Stock: <strong className="font-semibold text-slate-200">{project.availableUnits}</strong> / {project.quantityPurchased} unidades disponibles

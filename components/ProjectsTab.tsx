@@ -6,15 +6,23 @@ import {
   formatMoney,
   toMinorUnits,
   type Currency,
+  type EnterpriseProject,
   type ProductCondition,
   type ProjectDraft,
 } from "@/lib/enterprise";
+import SearchAndFilters, {
+  type ConditionFilter,
+  type CurrencyFilter,
+  type StatusFilter,
+} from "@/components/SearchAndFilters";
 
 type ProjectsTabProps = {
+  projects: EnterpriseProject[];
+  loading: boolean;
   onCreate: (project: ProjectDraft) => Promise<void>;
 };
 
-export default function ProjectsTab({ onCreate }: ProjectsTabProps) {
+export default function ProjectsTab({ projects, loading, onCreate }: ProjectsTabProps) {
   const [name, setName] = useState("");
   const [purchaseTotal, setPurchaseTotal] = useState("");
   const [quantity, setQuantity] = useState("");
@@ -23,12 +31,26 @@ export default function ProjectsTab({ onCreate }: ProjectsTabProps) {
   const [condition, setCondition] = useState<ProductCondition>("Nuevo");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+  const [filterCondition, setFilterCondition] = useState<ConditionFilter>("all");
+  const [filterCurrency, setFilterCurrency] = useState<CurrencyFilter>("all");
+  const [filterStatus, setFilterStatus] = useState<StatusFilter>("all");
 
   const unitCost = useMemo(() => {
     const total = Number(purchaseTotal);
     const units = Number(quantity);
     return total > 0 && units > 0 ? total / units : 0;
   }, [purchaseTotal, quantity]);
+  const filteredProjects = useMemo(() => {
+    const normalizedSearch = search.trim().toLocaleLowerCase("es");
+    return projects.filter((project) => {
+      const matchesSearch = !normalizedSearch || project.name.toLocaleLowerCase("es").includes(normalizedSearch);
+      const matchesCondition = filterCondition === "all" || project.condition === filterCondition;
+      const matchesCurrency = filterCurrency === "all" || project.currency === filterCurrency;
+      const matchesStatus = filterStatus === "all" || project.status === filterStatus;
+      return matchesSearch && matchesCondition && matchesCurrency && matchesStatus;
+    });
+  }, [filterCondition, filterCurrency, filterStatus, projects, search]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -98,6 +120,57 @@ export default function ProjectsTab({ onCreate }: ProjectsTabProps) {
             Registra una adquisición y activa su lote en el inventario.
           </p>
         </div>
+      </div>
+
+      <div className="mb-8">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold text-slate-200">Lotes registrados</h3>
+          <span className="text-xs text-slate-500">{filteredProjects.length} de {projects.length}</span>
+        </div>
+        <SearchAndFilters
+          condition={filterCondition}
+          currency={filterCurrency}
+          id="pipeline"
+          onConditionChange={setFilterCondition}
+          onCurrencyChange={setFilterCurrency}
+          onSearchChange={setSearch}
+          onStatusChange={setFilterStatus}
+          search={search}
+          status={filterStatus}
+        />
+        {loading ? (
+          <p className="border-y border-white/10 py-6 text-center text-sm text-slate-400">Cargando proyectos…</p>
+        ) : projects.length === 0 ? (
+          <p className="border-y border-white/10 py-6 text-center text-sm text-slate-400">Todavía no hay proyectos registrados.</p>
+        ) : filteredProjects.length === 0 ? (
+          <p className="border-y border-white/10 py-6 text-center text-sm text-slate-400">No se encontraron resultados para los filtros seleccionados.</p>
+        ) : (
+          <div className="divide-y divide-white/10 border-y border-white/10">
+            {filteredProjects.map((project) => (
+              <article className="flex flex-wrap items-center justify-between gap-3 py-4" key={project.id}>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h4 className="truncate text-sm font-medium text-white">{project.name}</h4>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${project.condition === "Nuevo" ? "bg-emerald-400/10 text-emerald-300" : "bg-amber-400/10 text-amber-300"}`}>
+                      {project.condition}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {project.availableUnits}/{project.quantityPurchased} unidades · {formatMoney(project.purchaseTotal, project.currency)}
+                  </p>
+                </div>
+                <span className={`rounded-full border px-2.5 py-1 text-[11px] ${project.status === "active" ? "border-purple-400/20 text-purple-200" : "border-slate-600 text-slate-400"}`}>
+                  {project.status === "active" ? "Activo" : "Liquidado"}
+                </span>
+              </article>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="mb-6 border-t border-white/10 pt-7">
+        <h3 className="text-base font-semibold text-white">Registrar oportunidad o lote</h3>
+        <p className="mt-1 text-sm text-slate-400">El lote se activará en inventario al guardar.</p>
       </div>
 
       <form className="max-w-3xl" onSubmit={handleSubmit}>

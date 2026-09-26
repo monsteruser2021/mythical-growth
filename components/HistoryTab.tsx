@@ -9,6 +9,13 @@ import {
 } from "@/lib/enterprise";
 import ExportCsvButton from "@/components/ExportCsvButton";
 import type { CsvColumn } from "@/lib/exportCsv";
+import SearchAndFilters, {
+  type ConditionFilter,
+  type CurrencyFilter,
+} from "@/components/SearchAndFilters";
+import { useMemo, useState } from "react";
+import ProfitBadge from "@/components/ProfitBadge";
+import ConditionBadge from "@/components/ConditionBadge";
 
 type HistoryTabProps = {
   projects: EnterpriseProject[];
@@ -68,6 +75,41 @@ export default function HistoryTab({
     (project) => project.availableUnits * project.unitCost,
   );
   const netProfit = splitCurrencyTotals(allProjects, (project) => project.netProfit);
+  const [search, setSearch] = useState("");
+  const [condition, setCondition] = useState<ConditionFilter>("all");
+  const [currency, setCurrency] = useState<CurrencyFilter>("all");
+  const [month, setMonth] = useState("");
+  const matchingSales = useMemo(() => {
+    const normalizedSearch = search.trim().toLocaleLowerCase("es");
+    return sales.filter((sale) => {
+      const matchesSearch = !normalizedSearch || sale.projectName.toLocaleLowerCase("es").includes(normalizedSearch);
+      const matchesCondition = condition === "all" || sale.condition === condition;
+      const matchesCurrency = currency === "all" || sale.currency === currency;
+      const matchesMonth = !month || sale.soldAt?.toISOString().slice(0, 7) === month;
+      return matchesSearch && matchesCondition && matchesCurrency && matchesMonth;
+    });
+  }, [condition, currency, month, sales, search]);
+  const latestSaleByProject = useMemo(() => {
+    const latest = new Map<string, SaleRecord>();
+    for (const sale of sales) {
+      const current = latest.get(sale.projectId);
+      if (!current || (sale.soldAt?.getTime() ?? 0) > (current.soldAt?.getTime() ?? 0)) {
+        latest.set(sale.projectId, sale);
+      }
+    }
+    return latest;
+  }, [sales]);
+  const matchingProjects = useMemo(() => {
+    const normalizedSearch = search.trim().toLocaleLowerCase("es");
+    return projects.filter((project) => {
+      const matchesSearch = !normalizedSearch || project.name.toLocaleLowerCase("es").includes(normalizedSearch);
+      const matchesCondition = condition === "all" || project.condition === condition;
+      const matchesCurrency = currency === "all" || project.currency === currency;
+      const closingSale = latestSaleByProject.get(project.id);
+      const matchesMonth = !month || closingSale?.soldAt?.toISOString().slice(0, 7) === month;
+      return matchesSearch && matchesCondition && matchesCurrency && matchesMonth;
+    });
+  }, [condition, currency, latestSaleByProject, month, projects, search]);
 
   const indicators = [
     { label: "Capital movilizado histórico", icon: Coins, totals: mobilized },
@@ -94,7 +136,7 @@ export default function HistoryTab({
           filenamePrefix="mythical-growth-historial-ventas"
           label="Exportar historial de ventas (CSV)"
           onSuccess={onExportSuccess}
-          rows={sales}
+          rows={matchingSales}
         />
       </div>
       {salesError && (
@@ -102,6 +144,17 @@ export default function HistoryTab({
           {salesError}
         </p>
       )}
+      <SearchAndFilters
+        condition={condition}
+        currency={currency}
+        id="history"
+        month={month}
+        onConditionChange={setCondition}
+        onCurrencyChange={setCurrency}
+        onMonthChange={setMonth}
+        onSearchChange={setSearch}
+        search={search}
+      />
 
       <div className="mb-9 grid gap-px overflow-hidden rounded-xl border border-white/10 bg-white/10 sm:grid-cols-3">
         {indicators.map(({ label, icon: Icon, totals }) => (
@@ -117,7 +170,7 @@ export default function HistoryTab({
 
       <div className="mb-4 flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold text-slate-200">Lotes cerrados</h3>
-        <span className="text-xs text-slate-500">{projects.length} registros</span>
+        <span className="text-xs text-slate-500">{matchingProjects.length} de {projects.length} registros</span>
       </div>
 
       {loading ? (
@@ -128,9 +181,20 @@ export default function HistoryTab({
           <p className="mt-3 text-sm font-medium text-slate-300">Todavía no hay proyectos liquidados</p>
           <p className="mt-1 text-xs text-slate-500">Los lotes aparecerán aquí cuando se venda la última unidad.</p>
         </div>
+      ) : matchingProjects.length === 0 ? (
+        <div className="border-y border-white/10 py-12 text-center">
+          <p className="text-sm font-medium text-slate-300">No se encontraron resultados para los filtros seleccionados</p>
+          <button
+            className="mt-3 text-xs font-medium text-purple-300 hover:text-purple-200"
+            onClick={() => { setSearch(""); setCondition("all"); setCurrency("all"); setMonth(""); }}
+            type="button"
+          >
+            Limpiar filtros
+          </button>
+        </div>
       ) : (
         <div className="divide-y divide-white/10 border-y border-white/10">
-          {projects.map((project) => {
+          {matchingProjects.map((project) => {
             const profitability = project.capitalRecovered > 0
               ? (project.netProfit / project.capitalRecovered) * 100
               : 0;
@@ -140,13 +204,19 @@ export default function HistoryTab({
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <h4 className="font-medium text-white">{project.name}</h4>
-                    <p className="mt-1 text-xs text-slate-500">
-                      {project.condition} · {project.quantityPurchased} unidades · Inversión: {formatMoney(project.purchaseTotal, project.currency)}
-                    </p>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                      <ConditionBadge condition={project.condition} />
+                      <span className="text-xs text-slate-500">
+                        {project.quantityPurchased} unidades · Inversión: {formatMoney(project.purchaseTotal, project.currency)}
+                      </span>
+                    </div>
                   </div>
-                  <span className="rounded-full border border-slate-700 bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-slate-300">
-                    Liquidado
-                  </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-slate-700 bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-slate-300">
+                      Liquidado
+                    </span>
+                    <ProfitBadge capitalRecovered={project.capitalRecovered} netProfit={project.netProfit} />
+                  </div>
                 </div>
 
                 <dl className="mt-5 grid gap-4 sm:grid-cols-3">
@@ -174,6 +244,42 @@ export default function HistoryTab({
           })}
         </div>
       )}
+
+      <div className="mt-9">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold text-slate-200">Ventas registradas</h3>
+          <span className="text-xs text-slate-500">{matchingSales.length} de {sales.length}</span>
+        </div>
+        {salesLoading ? (
+          <p className="border-y border-white/10 py-6 text-center text-sm text-slate-400">Cargando ventas…</p>
+        ) : matchingSales.length === 0 ? (
+          <p className="border-y border-white/10 py-6 text-center text-sm text-slate-500">
+            {sales.length === 0 ? "Todavía no hay ventas registradas." : "No se encontraron ventas para los filtros seleccionados."}
+          </p>
+        ) : (
+          <div className="divide-y divide-white/10 border-y border-white/10">
+            {matchingSales.map((sale) => (
+              <article className="flex flex-wrap items-center justify-between gap-3 py-4" key={sale.id}>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h4 className="truncate text-sm font-medium text-white">{sale.projectName}</h4>
+                    {sale.condition && <ConditionBadge condition={sale.condition} />}
+                  </div>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {sale.quantity} unidades · {formatMoney(sale.unitPrice, sale.currency)} por unidad · {sale.soldAt ? new Intl.DateTimeFormat("es-VE", { dateStyle: "medium" }).format(sale.soldAt) : "Fecha pendiente"}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="text-sm font-semibold tabular-nums text-slate-200">
+                    {formatMoney(sale.netProfit, sale.currency)}
+                  </span>
+                  <ProfitBadge capitalRecovered={sale.capitalRecovered} netProfit={sale.netProfit} />
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </div>
     </section>
   );
 }

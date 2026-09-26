@@ -412,7 +412,7 @@ export default function EnterpriseWorkspace() {
           role="tabpanel"
           tabIndex={0}
         >
-          {activeTab === "projects" && <ProjectsTab onCreate={createProject} />}
+          {activeTab === "projects" && <ProjectsTab loading={loading} onCreate={createProject} projects={projects} />}
           {activeTab === "inventory" && (
             <InventoryTab loading={loading} onSell={registerSale} projects={activeProjects} />
           )}
