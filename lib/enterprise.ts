@@ -2,6 +2,10 @@ export const PROJECTS_COLLECTION = "enterprise_projects";
 export const LEDGER_COLLECTION = "enterprise_financial_ledger";
 export const BALANCES_COLLECTION = "enterprise_financial_balances";
 
+export function balanceDocumentId(userId: string, currency: Currency) {
+  return `${userId}_${currency === "Bs" ? "VES" : "USD"}`;
+}
+
 export type Currency = "Bs" | "$";
 export type ProductCondition = "Nuevo" | "Usado";
 export type ProjectStatus = "active" | "liquidation";

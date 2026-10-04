@@ -1,0 +1,62 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function owns(data) {
+      return signedIn() && data.userId == request.auth.uid;
+    }
+
+    function ownsProject(projectId) {
+      return signedIn()
+        && get(/databases/$(database)/documents/enterprise_projects/$(projectId)).data.userId
+          == request.auth.uid;
+    }
+
+    match /enterprise_projects/{projectId} {
+      allow read: if owns(resource.data);
+      allow create: if owns(request.resource.data);
+      allow update: if owns(resource.data) && owns(request.resource.data);
+      allow delete: if owns(resource.data);
+
+      match /sales/{saleId} {
+        allow read: if owns(resource.data);
+        allow create: if owns(request.resource.data) && ownsProject(projectId);
+        allow update: if owns(resource.data)
+          && owns(request.resource.data)
+          && ownsProject(projectId);
+        allow delete: if owns(resource.data) && ownsProject(projectId);
+      }
+    }
+
+    match /{path=**}/sales/{saleId} {
+      allow read: if owns(resource.data);
+    }
+
+    match /enterprise_financial_ledger/{entryId} {
+      allow read: if owns(resource.data);
+      allow create: if owns(request.resource.data);
+      allow update: if owns(resource.data) && owns(request.resource.data);
+      allow delete: if owns(resource.data);
+    }
+
+    match /enterprise_financial_balances/{balanceId} {
+      allow get: if signedIn()
+        && (balanceId == request.auth.uid + '_VES' || balanceId == request.auth.uid + '_USD')
+        && (resource == null || owns(resource.data));
+      allow list: if owns(resource.data);
+      allow create: if owns(request.resource.data);
+      allow update: if owns(resource.data) && owns(request.resource.data);
+      allow delete: if owns(resource.data);
+    }
+
+    match /audit_logs/{logId} {
+      allow read: if owns(resource.data);
+      allow create: if owns(request.resource.data);
+      allow update, delete: if false;
+    }
+  }
+}

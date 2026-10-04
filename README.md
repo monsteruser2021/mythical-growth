@@ -20,6 +20,16 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Firestore data isolation
+
+Enterprise projects, sales, and financial ledger entries are owned by the authenticated Firebase UID in `userId`. Balance documents use `<uid>_VES` and `<uid>_USD`; Firestore listeners filter records by `userId`, and `firestore.rules` enforces ownership on reads and writes. Deploy the rules with `firebase deploy --only firestore:rules` before releasing the client changes.
+
+Existing documents without `userId` remain inaccessible under the ownership rules. Assign them to verified owners through a trusted migration before expecting them to appear; do not infer ownership from email or assign shared records to an arbitrary account.
+
+## Excel reports
+
+The sales history and financial ledger exports are real `.xlsx` workbooks generated in the browser with SheetJS. The history report exports the active sales filters; the finance report exports the selected category filter.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

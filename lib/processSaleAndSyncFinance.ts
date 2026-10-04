@@ -9,16 +9,12 @@ import {
   BALANCES_COLLECTION,
   LEDGER_COLLECTION,
   PROJECTS_COLLECTION,
+  balanceDocumentId,
   fromMinorUnits,
   projectFromSnapshot,
   toMinorUnits,
-  type Currency,
   type SaleInput,
 } from "@/lib/enterprise";
-
-function balanceDocumentId(currency: Currency) {
-  return currency === "Bs" ? "VES" : "USD";
-}
 
 function readBalanceAmount(data: Record<string, unknown> | undefined) {
   const amount = data?.amountMinor;
@@ -27,6 +23,7 @@ function readBalanceAmount(data: Record<string, unknown> | undefined) {
 
 export async function processSaleAndSyncFinance(
   db: Firestore,
+  userId: string,
   projectId: string,
   sale: SaleInput,
 ) {
@@ -39,8 +36,12 @@ export async function processSaleAndSyncFinance(
     const projectSnapshot = await transaction.get(projectRef);
     if (!projectSnapshot.exists()) throw new Error("El proyecto ya no existe.");
 
-    const current = projectFromSnapshot(projectSnapshot.id, projectSnapshot.data());
-    const balanceRef = doc(db, BALANCES_COLLECTION, balanceDocumentId(current.currency));
+    const projectData = projectSnapshot.data();
+    if (projectData.userId !== userId) {
+      throw new Error("No tienes permiso para registrar ventas en este proyecto.");
+    }
+    const current = projectFromSnapshot(projectSnapshot.id, projectData);
+    const balanceRef = doc(db, BALANCES_COLLECTION, balanceDocumentId(userId, current.currency));
     const balanceSnapshot = await transaction.get(balanceRef);
     if (current.status !== "active") throw new Error("Este lote ya fue liquidado.");
     if (!Number.isInteger(sale.quantity) || sale.quantity < 1 || sale.quantity > current.availableUnits) {
@@ -86,6 +87,7 @@ export async function processSaleAndSyncFinance(
       updatedAt: serverTimestamp(),
     });
     transaction.set(saleRef, {
+      userId,
       projectName: current.name,
       condition: current.condition,
       unitCost: current.unitCost,
@@ -98,6 +100,7 @@ export async function processSaleAndSyncFinance(
       soldAt: serverTimestamp(),
     });
     transaction.set(capitalLedgerRef, {
+      userId,
       category: "investment",
       operation: "sale_capital_return",
       currency: current.currency,
@@ -108,6 +111,7 @@ export async function processSaleAndSyncFinance(
       createdAt: serverTimestamp(),
     });
     transaction.set(gainLedgerRef, {
+      userId,
       category: "gain",
       operation: "sale_profit",
       currency: current.currency,
@@ -118,6 +122,7 @@ export async function processSaleAndSyncFinance(
       createdAt: serverTimestamp(),
     });
     transaction.set(balanceRef, {
+      userId,
       currency: current.currency,
       amountMinor: updatedBalance,
       updatedAt: serverTimestamp(),

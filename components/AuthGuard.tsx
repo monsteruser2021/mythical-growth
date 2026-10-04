@@ -3,8 +3,14 @@
 import { onAuthStateChanged, type User } from "firebase/auth";
 import { LoaderCircle, ShieldAlert } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import { auth } from "@/lib/firebase";
+
+const AuthContext = createContext<User | null>(null);
+
+export function useAuth() {
+  return useContext(AuthContext);
+}
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -72,5 +78,5 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
     );
   }
 
-  return children;
+  return <AuthContext.Provider value={user}>{children}</AuthContext.Provider>;
 }

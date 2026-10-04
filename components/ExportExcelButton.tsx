@@ -2,27 +2,29 @@
 
 import { Download, LoaderCircle } from "lucide-react";
 import { useState } from "react";
-import { exportToCSV, reportFilename, type CsvColumn } from "@/lib/exportCsv";
+import { exportToExcel, reportFilename, type ExcelColumn } from "@/lib/exportExcel";
 
-type ExportCsvButtonProps<Row> = {
+type ExportExcelButtonProps<Row> = {
   rows: readonly Row[];
-  columns: readonly CsvColumn<Row>[];
+  columns: readonly ExcelColumn<Row>[];
   filenamePrefix: string;
+  sheetName: string;
   label: string;
   disabled?: boolean;
   disabledLabel?: string;
   onSuccess: () => void;
 };
 
-export default function ExportCsvButton<Row>({
+export default function ExportExcelButton<Row>({
   rows,
   columns,
   filenamePrefix,
+  sheetName,
   label,
   disabled = false,
   disabledLabel = "Cargando datos…",
   onSuccess,
-}: ExportCsvButtonProps<Row>) {
+}: ExportExcelButtonProps<Row>) {
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
 
@@ -32,10 +34,10 @@ export default function ExportCsvButton<Row>({
 
     try {
       await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-      exportToCSV(rows, reportFilename(filenamePrefix), columns);
+      exportToExcel(rows, reportFilename(filenamePrefix), sheetName, columns);
       onSuccess();
     } catch {
-      setError("No se pudo generar el archivo. Inténtalo de nuevo.");
+      setError("No se pudo generar el archivo Excel. Inténtalo de nuevo.");
     } finally {
       setExporting(false);
     }
@@ -54,11 +56,11 @@ export default function ExportCsvButton<Row>({
         ) : (
           <Download aria-hidden="true" className="size-4" />
         )}
-        {exporting ? "Generando CSV…" : disabled ? disabledLabel : label}
+        {exporting ? "Generando Excel…" : disabled ? disabledLabel : label}
       </button>
       {error && <p className="text-xs text-rose-300" role="alert">{error}</p>}
       <span aria-live="polite" className="sr-only">
-        {exporting ? "Generando archivo CSV" : ""}
+        {exporting ? "Generando archivo Excel" : ""}
       </span>
     </div>
   );

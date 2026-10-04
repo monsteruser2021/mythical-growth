@@ -1,13 +1,16 @@
 "use client";
 
 import { signOut } from "firebase/auth";
+import type { User } from "firebase/auth";
 import {
   collection,
   collectionGroup,
   doc,
   onSnapshot,
+  query,
   runTransaction,
   serverTimestamp,
+  where,
 } from "firebase/firestore";
 import {
   Archive,
@@ -23,11 +26,13 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { auth, db } from "@/lib/firebase";
+import { db, auth } from "@/lib/firebase";
+import { useAuth } from "@/components/AuthGuard";
 import {
   BALANCES_COLLECTION,
   LEDGER_COLLECTION,
   PROJECTS_COLLECTION,
+  balanceDocumentId,
   ledgerEntryFromSnapshot,
   projectFromSnapshot,
   saleFromSnapshot,
@@ -57,17 +62,20 @@ const tabs: { id: WorkspaceTab; label: string; icon: typeof Lightbulb }[] = [
   { id: "finance", label: "Finanzas y balance", icon: CircleDollarSign },
 ];
 
-function balanceDocumentId(currency: Currency) {
-  return currency === "Bs" ? "VES" : "USD";
-}
-
 function readBalanceAmount(data: Record<string, unknown> | undefined) {
   const amount = data?.amountMinor;
   return typeof amount === "number" && Number.isSafeInteger(amount) ? amount : 0;
 }
 
 export default function EnterpriseWorkspace() {
+  const user = useAuth();
+  if (!user) return null;
+  return <AuthenticatedWorkspace key={user.uid} user={user} />;
+}
+
+function AuthenticatedWorkspace({ user }: { user: User }) {
   const router = useRouter();
+  const userId = user.uid;
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("projects");
   const [projects, setProjects] = useState<EnterpriseProject[]>([]);
   const [sales, setSales] = useState<SaleRecord[]>([]);
@@ -83,7 +91,10 @@ export default function EnterpriseWorkspace() {
   const [signingOut, setSigningOut] = useState(false);
 
   useEffect(() => {
-    const projectsRef = collection(db, PROJECTS_COLLECTION);
+    const projectsRef = query(
+      collection(db, PROJECTS_COLLECTION),
+      where("userId", "==", userId),
+    );
     return onSnapshot(
       projectsRef,
       (snapshot) => {
@@ -96,11 +107,11 @@ export default function EnterpriseWorkspace() {
         setSubscriptionError("No se pudo sincronizar Firestore. Revisa la conexión y los permisos de la base de datos.");
       },
     );
-  }, []);
+  }, [userId]);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(
-      collectionGroup(db, "sales"),
+      query(collectionGroup(db, "sales"), where("userId", "==", userId)),
       (snapshot) => {
         const saleRecords = snapshot.docs
           .flatMap((saleDoc) => {
@@ -119,11 +130,11 @@ export default function EnterpriseWorkspace() {
       },
     );
     return unsubscribe;
-  }, []);
+  }, [userId]);
 
   useEffect(() => {
     const unsubscribeLedger = onSnapshot(
-      collection(db, LEDGER_COLLECTION),
+      query(collection(db, LEDGER_COLLECTION), where("userId", "==", userId)),
       (snapshot) => {
         const entries = snapshot.docs
           .map((entryDoc) => ledgerEntryFromSnapshot(entryDoc.id, entryDoc.data()))
@@ -139,12 +150,16 @@ export default function EnterpriseWorkspace() {
       },
     );
     const unsubscribeBalances = onSnapshot(
-      collection(db, BALANCES_COLLECTION),
+      query(collection(db, BALANCES_COLLECTION), where("userId", "==", userId)),
       (snapshot) => {
         const nextBalances: Record<Currency, number> = { Bs: 0, "$": 0 };
         for (const balanceDoc of snapshot.docs) {
-          const currency: Currency | null = balanceDoc.id === "VES" ? "Bs" : balanceDoc.id === "USD" ? "$" : null;
-          if (currency) nextBalances[currency] = readBalanceAmount(balanceDoc.data());
+          const balance = balanceDoc.data();
+          if (balanceDoc.id === balanceDocumentId(userId, "Bs")) {
+            nextBalances.Bs = readBalanceAmount(balance);
+          } else if (balanceDoc.id === balanceDocumentId(userId, "$")) {
+            nextBalances["$"] = readBalanceAmount(balance);
+          }
         }
         setBalances(nextBalances);
       },
@@ -154,7 +169,7 @@ export default function EnterpriseWorkspace() {
       unsubscribeLedger();
       unsubscribeBalances();
     };
-  }, []);
+  }, [userId]);
 
   useEffect(() => {
     if (!notice) return;
@@ -163,9 +178,10 @@ export default function EnterpriseWorkspace() {
   }, [notice]);
 
   async function createProject(project: ProjectDraft) {
+    if (!userId) throw new Error("Debes iniciar sesión para gestionar tus proyectos.");
     const projectRef = doc(collection(db, PROJECTS_COLLECTION));
     const ledgerRef = doc(collection(db, LEDGER_COLLECTION));
-    const balanceRef = doc(db, BALANCES_COLLECTION, balanceDocumentId(project.currency));
+    const balanceRef = doc(db, BALANCES_COLLECTION, balanceDocumentId(userId, project.currency));
     const acquisitionMinor = toMinorUnits(project.purchaseTotal);
     if (!Number.isSafeInteger(acquisitionMinor) || acquisitionMinor < 1) {
       throw new Error("El costo de adquisición supera el importe admitido.");
@@ -180,6 +196,7 @@ export default function EnterpriseWorkspace() {
 
       transaction.set(projectRef, {
         ...project,
+        userId,
         unitCost: project.purchaseTotal / project.quantityPurchased,
         availableUnits: project.quantityPurchased,
         totalRevenue: 0,
@@ -190,6 +207,7 @@ export default function EnterpriseWorkspace() {
         updatedAt: serverTimestamp(),
       });
       transaction.set(ledgerRef, {
+        userId,
         category: "investment",
         operation: "project_acquisition",
         currency: project.currency,
@@ -200,6 +218,7 @@ export default function EnterpriseWorkspace() {
         createdAt: serverTimestamp(),
       });
       transaction.set(balanceRef, {
+        userId,
         currency: project.currency,
         amountMinor: currentBalance - acquisitionMinor,
         updatedAt: serverTimestamp(),
@@ -210,21 +229,24 @@ export default function EnterpriseWorkspace() {
   }
 
   async function registerSale(project: EnterpriseProject, sale: SaleInput) {
-    await processSaleAndSyncFinance(db, project.id, sale);
+    if (!userId) throw new Error("Debes iniciar sesión para registrar ventas.");
+    await processSaleAndSyncFinance(db, userId, project.id, sale);
     setNotice({ kind: "success", message: "Venta registrada y stock actualizado." });
   }
 
   async function addCapital(input: CapitalContributionInput) {
+    if (!userId) throw new Error("Debes iniciar sesión para registrar movimientos financieros.");
     if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor < 1) {
       throw new Error("El aporte supera el importe admitido.");
     }
     const ledgerRef = doc(collection(db, LEDGER_COLLECTION));
-    const balanceRef = doc(db, BALANCES_COLLECTION, balanceDocumentId(input.currency));
+    const balanceRef = doc(db, BALANCES_COLLECTION, balanceDocumentId(userId, input.currency));
     await runTransaction(db, async (transaction) => {
       const balanceSnapshot = await transaction.get(balanceRef);
       const nextBalance = readBalanceAmount(balanceSnapshot.data()) + input.amountMinor;
       if (!Number.isSafeInteger(nextBalance)) throw new Error("El balance supera el importe contable admitido.");
       transaction.set(ledgerRef, {
+        userId,
         category: "investment",
         operation: "capital_contribution",
         currency: input.currency,
@@ -235,6 +257,7 @@ export default function EnterpriseWorkspace() {
         createdAt: serverTimestamp(),
       });
       transaction.set(balanceRef, {
+        userId,
         currency: input.currency,
         amountMinor: nextBalance,
         updatedAt: serverTimestamp(),
@@ -244,6 +267,7 @@ export default function EnterpriseWorkspace() {
   }
 
   async function exchangeCurrency(input: CurrencyExchangeInput) {
+    if (!userId) throw new Error("Debes iniciar sesión para convertir divisas.");
     if (input.sourceCurrency === input.targetCurrency) throw new Error("Selecciona monedas distintas para convertir.");
     if (!Number.isSafeInteger(input.sourceAmountMinor) || !Number.isSafeInteger(input.targetAmountMinor) || input.sourceAmountMinor < 1 || input.targetAmountMinor < 1 || !Number.isFinite(input.rate) || input.rate <= 0) {
       throw new Error("Los importes o la tasa de cambio no son válidos.");
@@ -251,8 +275,8 @@ export default function EnterpriseWorkspace() {
     const sourceLedgerRef = doc(collection(db, LEDGER_COLLECTION));
     const targetLedgerRef = doc(collection(db, LEDGER_COLLECTION));
     const exchangeGroupId = sourceLedgerRef.id;
-    const sourceBalanceRef = doc(db, BALANCES_COLLECTION, balanceDocumentId(input.sourceCurrency));
-    const targetBalanceRef = doc(db, BALANCES_COLLECTION, balanceDocumentId(input.targetCurrency));
+    const sourceBalanceRef = doc(db, BALANCES_COLLECTION, balanceDocumentId(userId, input.sourceCurrency));
+    const targetBalanceRef = doc(db, BALANCES_COLLECTION, balanceDocumentId(userId, input.targetCurrency));
 
     await runTransaction(db, async (transaction) => {
       const [sourceSnapshot, targetSnapshot] = await Promise.all([
@@ -269,6 +293,7 @@ export default function EnterpriseWorkspace() {
       }
 
       transaction.set(sourceLedgerRef, {
+        userId,
         category: "investment",
         operation: "currency_exchange",
         currency: input.sourceCurrency,
@@ -282,6 +307,7 @@ export default function EnterpriseWorkspace() {
         createdAt: serverTimestamp(),
       });
       transaction.set(targetLedgerRef, {
+        userId,
         category: "investment",
         operation: "currency_exchange",
         currency: input.targetCurrency,
@@ -295,11 +321,13 @@ export default function EnterpriseWorkspace() {
         createdAt: serverTimestamp(),
       });
       transaction.set(sourceBalanceRef, {
+        userId,
         currency: input.sourceCurrency,
         amountMinor: sourceBalance - input.sourceAmountMinor,
         updatedAt: serverTimestamp(),
       });
       transaction.set(targetBalanceRef, {
+        userId,
         currency: input.targetCurrency,
         amountMinor: targetBalance + input.targetAmountMinor,
         updatedAt: serverTimestamp(),
@@ -351,7 +379,7 @@ export default function EnterpriseWorkspace() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <span className="hidden max-w-48 truncate text-xs text-slate-400 sm:block">{auth.currentUser?.email}</span>
+            <span className="hidden max-w-48 truncate text-xs text-slate-400 sm:block">{user.email}</span>
             <button
               className="inline-flex size-9 items-center justify-center rounded-lg border border-white/10 text-slate-400 transition-colors hover:border-white/20 hover:text-white focus-visible:outline-2 focus-visible:outline-purple-300 disabled:opacity-50"
               disabled={signingOut}
@@ -420,7 +448,7 @@ export default function EnterpriseWorkspace() {
             <HistoryTab
               allProjects={projects}
               loading={loading}
-              onExportSuccess={() => setNotice({ kind: "success", message: "Historial de ventas exportado en CSV." })}
+              onExportSuccess={() => setNotice({ kind: "success", message: "Historial de ventas exportado en Excel." })}
               projects={liquidatedProjects}
               sales={salesForExport}
               salesError={salesError}
@@ -433,7 +461,7 @@ export default function EnterpriseWorkspace() {
               entries={ledgerEntries}
               error={financeError}
               loading={financeLoading}
-              onExportSuccess={() => setNotice({ kind: "success", message: "Balance financiero exportado en CSV." })}
+              onExportSuccess={() => setNotice({ kind: "success", message: "Balance financiero exportado en Excel." })}
               onAddCapital={addCapital}
               onExchange={exchangeCurrency}
             />

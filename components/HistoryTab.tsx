@@ -7,8 +7,8 @@ import {
   type EnterpriseProject,
   type SaleRecord,
 } from "@/lib/enterprise";
-import ExportCsvButton from "@/components/ExportCsvButton";
-import type { CsvColumn } from "@/lib/exportCsv";
+import ExportExcelButton from "@/components/ExportExcelButton";
+import type { ExcelColumn } from "@/lib/exportExcel";
 import SearchAndFilters, {
   type ConditionFilter,
   type CurrencyFilter,
@@ -48,16 +48,16 @@ function CurrencyTotals({ totals }: { totals: TotalsByCurrency }) {
   );
 }
 
-const salesCsvColumns: CsvColumn<SaleRecord>[] = [
-  { header: "Nombre del Proyecto / Producto", value: (sale) => sale.projectName },
-  { header: "Condición (Nuevo/Usado)", value: (sale) => sale.condition ?? "" },
-  { header: "Unidades Vendidas", value: (sale) => sale.quantity },
-  { header: "Costo Unitario", value: (sale) => sale.unitCost.toFixed(2) },
-  { header: "Precio de Venta", value: (sale) => sale.unitPrice.toFixed(2) },
-  { header: "Capital Recuperado", value: (sale) => sale.capitalRecovered.toFixed(2) },
-  { header: "Ganancia Neta", value: (sale) => sale.netProfit.toFixed(2) },
-  { header: "Moneda (Bs/$)", value: (sale) => sale.currency },
-  { header: "Fecha de Cierre", value: (sale) => sale.soldAt?.toISOString() ?? "" },
+const salesExcelColumns: ExcelColumn<SaleRecord>[] = [
+  { header: "Nombre", value: (sale) => sale.projectName, width: 32 },
+  { header: "Condición", value: (sale) => sale.condition ?? "" },
+  { header: "Unidades Vendidas", value: (sale) => sale.quantity, numberFormat: "#,##0" },
+  { header: "Costo Unitario", value: (sale) => sale.unitCost, numberFormat: (sale) => sale.currency === "Bs" ? '"Bs" #,##0.00' : '"$" #,##0.00' },
+  { header: "Precio de Venta", value: (sale) => sale.unitPrice, numberFormat: (sale) => sale.currency === "Bs" ? '"Bs" #,##0.00' : '"$" #,##0.00' },
+  { header: "Capital Recuperado", value: (sale) => sale.capitalRecovered, numberFormat: (sale) => sale.currency === "Bs" ? '"Bs" #,##0.00' : '"$" #,##0.00' },
+  { header: "Ganancia Neta", value: (sale) => sale.netProfit, numberFormat: (sale) => sale.currency === "Bs" ? '"Bs" #,##0.00' : '"$" #,##0.00' },
+  { header: "Moneda", value: (sale) => sale.currency, width: 12 },
+  { header: "Fecha", value: (sale) => sale.soldAt ?? "", numberFormat: "dd/mm/yyyy hh:mm", width: 22 },
 ];
 
 export default function HistoryTab({
@@ -129,14 +129,15 @@ export default function HistoryTab({
             <p className="mt-1 text-sm text-slate-400">Cierre de lotes y resultados financieros realizados.</p>
           </div>
         </div>
-        <ExportCsvButton
-          columns={salesCsvColumns}
+        <ExportExcelButton
+          columns={salesExcelColumns}
           disabled={salesLoading || Boolean(salesError)}
           disabledLabel={salesError ? "Ventas no disponibles" : undefined}
           filenamePrefix="mythical-growth-historial-ventas"
-          label="Exportar historial de ventas (CSV)"
+          label="Exportar historial de ventas (Excel)"
           onSuccess={onExportSuccess}
           rows={matchingSales}
+          sheetName="Historial de ventas"
         />
       </div>
       {salesError && (

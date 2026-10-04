@@ -21,8 +21,8 @@ import {
   type FinanceCategory,
   type LedgerEntry,
 } from "@/lib/enterprise";
-import ExportCsvButton from "@/components/ExportCsvButton";
-import type { CsvColumn } from "@/lib/exportCsv";
+import ExportExcelButton from "@/components/ExportExcelButton";
+import type { ExcelColumn } from "@/lib/exportExcel";
 
 type FinanceTabProps = {
   balances: Record<Currency, number>;
@@ -42,14 +42,14 @@ const inputClass =
   "h-10 w-full rounded-lg border border-white/10 bg-slate-950/70 px-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-purple-400/70 focus:ring-2 focus:ring-purple-500/20 disabled:opacity-50";
 const labelClass = "mb-1.5 block text-xs font-medium text-slate-300";
 
-const financeCsvColumns: CsvColumn<LedgerEntry>[] = [
-  { header: "ID de Transacción", value: (entry) => entry.id },
-  { header: "Descripción", value: (entry) => entry.description },
-  { header: "Categoría (Inversión / Ganancia)", value: (entry) => entry.category === "investment" ? "Inversión" : "Ganancia" },
-  { header: "Moneda (Bs / $)", value: (entry) => entry.currency },
-  { header: "Monto", value: (entry) => (entry.amountMinor / 100).toFixed(2) },
-  { header: "Tipo (Ingreso / Egreso / Conversión)", value: (entry) => entry.operation === "currency_exchange" ? "Conversión" : entry.amountMinor < 0 ? "Egreso" : "Ingreso" },
-  { header: "Fecha", value: (entry) => entry.createdAt?.toISOString() ?? "" },
+const financeExcelColumns: ExcelColumn<LedgerEntry>[] = [
+  { header: "ID", value: (entry) => entry.id, width: 28 },
+  { header: "Descripción", value: (entry) => entry.description, width: 36 },
+  { header: "Categoría", value: (entry) => entry.category === "investment" ? "Inversión" : "Ganancia" },
+  { header: "Moneda", value: (entry) => entry.currency, width: 12 },
+  { header: "Monto", value: (entry) => entry.amountMinor / 100, numberFormat: (entry) => entry.currency === "Bs" ? '"Bs" #,##0.00' : '"$" #,##0.00' },
+  { header: "Tipo", value: (entry) => entry.operation === "currency_exchange" ? "Conversión" : entry.amountMinor < 0 ? "Egreso" : "Ingreso" },
+  { header: "Fecha", value: (entry) => entry.createdAt ?? "", numberFormat: "dd/mm/yyyy hh:mm", width: 22 },
 ];
 
 export default function FinanceTab({
@@ -293,14 +293,15 @@ export default function FinanceTab({
             <p className="mt-1 text-xs text-slate-500">Registro cronológico protegido contra edición y borrado en la interfaz.</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <ExportCsvButton
-              columns={financeCsvColumns}
+            <ExportExcelButton
+              columns={financeExcelColumns}
               disabled={loading || Boolean(error)}
               disabledLabel={error ? "Movimientos no disponibles" : undefined}
               filenamePrefix="mythical-growth-balance-financiero"
-              label="Exportar balance financiero (CSV)"
+              label="Exportar balance financiero (Excel)"
               onSuccess={onExportSuccess}
-              rows={entries}
+              rows={filteredEntries}
+              sheetName="Finanzas"
             />
             <div aria-label="Filtrar movimientos" className="flex items-center gap-1 rounded-lg border border-white/10 p-1" role="group">
               {([
