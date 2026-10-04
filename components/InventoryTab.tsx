@@ -13,6 +13,7 @@ import SearchAndFilters, {
 } from "@/components/SearchAndFilters";
 import StockBadge from "@/components/StockBadge";
 import ConditionBadge from "@/components/ConditionBadge";
+import PaginationControls, { usePagination } from "@/components/PaginationControls";
 
 type InventoryTabProps = {
   projects: EnterpriseProject[];
@@ -34,6 +35,7 @@ export default function InventoryTab({ projects, loading, onSell }: InventoryTab
       return matchesSearch && matchesCondition && matchesCurrency;
     });
   }, [condition, currency, projects, search]);
+  const pagination = usePagination(filteredProjects);
 
   return (
     <section aria-labelledby="inventory-heading" className="py-8">
@@ -87,7 +89,7 @@ export default function InventoryTab({ projects, loading, onSell }: InventoryTab
         </div>
       ) : (
         <div className="divide-y divide-white/10 border-y border-white/10">
-          {filteredProjects.map((project) => (
+          {pagination.pageItems.map((project) => (
             <article className="grid gap-4 py-5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center" key={project.id}>
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2.5">
@@ -114,6 +116,17 @@ export default function InventoryTab({ projects, loading, onSell }: InventoryTab
             </article>
           ))}
         </div>
+      )}
+      {!loading && filteredProjects.length > 0 && (
+        <PaginationControls
+          currentPage={pagination.currentPage}
+          label="inventario activo"
+          onPageChange={pagination.setPage}
+          onPageSizeChange={pagination.changePageSize}
+          pageCount={pagination.pageCount}
+          pageSize={pagination.pageSize}
+          totalItems={filteredProjects.length}
+        />
       )}
 
       {selectedProject && (

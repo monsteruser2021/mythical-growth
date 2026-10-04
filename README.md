@@ -28,9 +28,11 @@ Existing documents without `userId` remain inaccessible under the ownership rule
 
 ## Pipeline statuses
 
-Pipeline projects begin in `evaluation` with zero available inventory and no financial ledger or balance mutation. Advancing to `in_progress` also has no financial effect. Only confirming acquisition moves a project to `purchased`, decrements the user's balance, records the acquisition, and adds the units to active inventory in one Firestore transaction. Selling the final units moves it to `liquidation`. Historical committed-capital totals include purchased and liquidated projects, never evaluation or in-progress opportunities. Legacy `active` documents are read as `purchased`.
+Pipeline projects use three states: `evaluation`, `purchased`, and `discarded`. New opportunities store unit cost, quantity, estimated total cost, and unit sale price without changing balances or inventory. Confirming acquisition moves an opportunity directly from `evaluation` to `purchased`, debits the user's balance, records the acquisition, and adds units to active inventory in one Firestore transaction. Selling all units leaves the project `purchased` with zero available units so its sales remain in history. Discarding an opportunity archives it without financial or inventory effects. Legacy `active` and `liquidation` projects are read as `purchased`; legacy `in_progress` projects are read as `evaluation` and transition directly to a current state when next updated.
 
-Projects can only be edited or deleted while in `evaluation` or `in_progress`, with zero active inventory and no sales or financial ledger entries. Edit and delete operations are atomic with immutable `UPDATE_PROJECT` and `DELETE_PROJECT` audit records; Firestore rules reject edits or deletions outside those initial stages.
+Projects can only be edited or deleted while in `evaluation`, with zero active inventory and no sales or financial ledger entries. Edit and delete operations are atomic with immutable `UPDATE_PROJECT` and `DELETE_PROJECT` audit records; Firestore rules reject edits or deletions outside that stage.
+
+Pipeline, inventory, archived-project, sales, and financial-movement lists show 8 items per page by default, with options for 16 or 24.
 
 ## Excel reports
 

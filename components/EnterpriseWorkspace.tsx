@@ -4,7 +4,6 @@ import { signOut } from "firebase/auth";
 import type { User } from "firebase/auth";
 import {
   collection,
-  collectionGroup,
   doc,
   getDocs,
   onSnapshot,
@@ -81,9 +80,12 @@ function AuthenticatedWorkspace({ user }: { user: User }) {
   const userId = user.uid;
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("projects");
   const [projects, setProjects] = useState<EnterpriseProject[]>([]);
-  const [sales, setSales] = useState<SaleRecord[]>([]);
-  const [salesLoading, setSalesLoading] = useState(true);
-  const [salesError, setSalesError] = useState("");
+  const [salesState, setSalesState] = useState<{
+    projectIdsKey: string;
+    sales: SaleRecord[];
+    loading: boolean;
+    error: string;
+  }>({ projectIdsKey: "", sales: [], loading: true, error: "" });
   const [balances, setBalances] = useState<Record<Currency, number>>({ Bs: 0, "$": 0 });
   const [ledgerEntries, setLedgerEntries] = useState<LedgerEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -112,28 +114,81 @@ function AuthenticatedWorkspace({ user }: { user: User }) {
     );
   }, [userId]);
 
+  const projectIdsKey = JSON.stringify(projects.map((project) => project.id).sort());
+  const sales = salesState.projectIdsKey === projectIdsKey ? salesState.sales : [];
+  const salesLoading =
+    loading ||
+    (projects.length > 0 &&
+      (salesState.projectIdsKey !== projectIdsKey || salesState.loading));
+  const salesError = salesState.projectIdsKey === projectIdsKey ? salesState.error : "";
+
   useEffect(() => {
-    const unsubscribe = onSnapshot(
-      query(collectionGroup(db, "sales"), where("userId", "==", userId)),
-      (snapshot) => {
-        const saleRecords = snapshot.docs
-          .flatMap((saleDoc) => {
-            const projectRef = saleDoc.ref.parent.parent;
-            if (!projectRef || projectRef.parent.id !== PROJECTS_COLLECTION) return [];
-            return [saleFromSnapshot(saleDoc.id, projectRef.id, saleDoc.data())];
-          })
-          .sort((first, second) => (second.soldAt?.getTime() ?? 0) - (first.soldAt?.getTime() ?? 0));
-        setSales(saleRecords);
-        setSalesLoading(false);
-        setSalesError("");
-      },
-      () => {
-        setSalesLoading(false);
-        setSalesError("No se pudo cargar el historial de ventas. Revisa los permisos de Firestore.");
-      },
+    const projectIds: string[] = JSON.parse(projectIdsKey);
+    let active = true;
+    const loadedProjectIds = new Set<string>();
+
+    if (projectIds.length === 0) {
+      return;
+    }
+
+    function markProjectLoaded(projectId: string) {
+      loadedProjectIds.add(projectId);
+      if (loadedProjectIds.size === projectIds.length) {
+        setSalesState((current) => {
+          const state = current.projectIdsKey === projectIdsKey
+            ? current
+            : { projectIdsKey, sales: [], loading: true, error: "" };
+          return { ...state, loading: false };
+        });
+      }
+    }
+
+    const unsubscribeSales = projectIds.map((projectId) =>
+      onSnapshot(
+        collection(db, PROJECTS_COLLECTION, projectId, "sales"),
+        (snapshot) => {
+          if (!active) return;
+          const projectSales = snapshot.docs.map((saleDoc) =>
+            saleFromSnapshot(saleDoc.id, projectId, saleDoc.data()),
+          );
+          setSalesState((current) => {
+            const state = current.projectIdsKey === projectIdsKey
+              ? current
+              : { projectIdsKey, sales: [], loading: true, error: "" };
+            return {
+              ...state,
+              sales: [
+                ...state.sales.filter((sale) => sale.projectId !== projectId),
+                ...projectSales,
+              ].sort((first, second) => (second.soldAt?.getTime() ?? 0) - (first.soldAt?.getTime() ?? 0)),
+            };
+          });
+          markProjectLoaded(projectId);
+        },
+        (error) => {
+          if (!active) return;
+          console.error(`No se pudieron cargar las ventas del proyecto ${projectId}.`, error);
+          const detail = error.code === "permission-denied"
+            ? "Firestore denegó la lectura de ventas. Revisa las reglas desplegadas y la propiedad del proyecto."
+            : error.code === "failed-precondition"
+              ? "Firestore requiere un índice para cargar las ventas de este proyecto."
+              : `Firestore no pudo cargar las ventas (${error.code}): ${error.message}`;
+          setSalesState((current) => {
+            const state = current.projectIdsKey === projectIdsKey
+              ? current
+              : { projectIdsKey, sales: [], loading: true, error: "" };
+            return { ...state, error: detail };
+          });
+          markProjectLoaded(projectId);
+        },
+      ),
     );
-    return unsubscribe;
-  }, [userId]);
+
+    return () => {
+      active = false;
+      unsubscribeSales.forEach((unsubscribe) => unsubscribe());
+    };
+  }, [projectIdsKey]);
 
   useEffect(() => {
     const unsubscribeLedger = onSnapshot(
@@ -211,25 +266,6 @@ function AuthenticatedWorkspace({ user }: { user: User }) {
     setNotice({ kind: "success", message: "Oportunidad guardada en evaluación; no se comprometió capital." });
   }
 
-  async function advanceProject(project: EnterpriseProject) {
-    if (!userId) throw new Error("Debes iniciar sesión para gestionar tus proyectos.");
-    const projectRef = doc(db, PROJECTS_COLLECTION, project.id);
-    await runTransaction(db, async (transaction) => {
-      const projectSnapshot = await transaction.get(projectRef);
-      if (!projectSnapshot.exists() || projectSnapshot.data().userId !== userId) {
-        throw new Error("No se encontró una oportunidad propia para avanzar.");
-      }
-      if (projectSnapshot.data().status !== "evaluation") {
-        throw new Error("Solo las oportunidades en evaluación pueden avanzar a En Proceso.");
-      }
-      transaction.update(projectRef, {
-        status: "in_progress",
-        updatedAt: serverTimestamp(),
-      });
-    });
-    setNotice({ kind: "success", message: "Proyecto avanzado a En Proceso; no se comprometió capital." });
-  }
-
   async function editProject(project: EnterpriseProject, input: ProjectEditInput) {
     if (!userId) throw new Error("Debes iniciar sesión para gestionar tus proyectos.");
     const purchaseTotalMinor = toMinorUnits(input.purchaseTotal);
@@ -255,11 +291,13 @@ function AuthenticatedWorkspace({ user }: { user: User }) {
         throw new Error("No se encontró un proyecto propio para editar.");
       }
       const currentProject = projectFromSnapshot(projectSnapshot.id, projectSnapshot.data());
+      const storedStatus = projectSnapshot.data().status;
       if (
-        (currentProject.status !== "evaluation" && currentProject.status !== "in_progress") ||
+        currentProject.status !== "evaluation" ||
+        (storedStatus !== "evaluation" && storedStatus !== "in_progress") ||
         currentProject.availableUnits !== 0
       ) {
-        throw new Error("Solo se pueden editar proyectos en evaluación o en proceso sin inventario activo.");
+        throw new Error("Solo se pueden editar oportunidades en evaluación sin inventario activo.");
       }
 
       const before = {
@@ -269,7 +307,7 @@ function AuthenticatedWorkspace({ user }: { user: User }) {
         condition: currentProject.condition,
         quantityPurchased: currentProject.quantityPurchased,
         salePriceUnit: currentProject.salePriceUnit,
-        status: currentProject.status,
+        status: storedStatus,
       };
       const after = {
         name: input.name.trim(),
@@ -278,7 +316,7 @@ function AuthenticatedWorkspace({ user }: { user: User }) {
         condition: input.condition,
         quantityPurchased: input.quantityPurchased,
         salePriceUnit: input.salePriceUnit,
-        status: input.status,
+        status: "evaluation",
       };
 
       transaction.update(projectRef, {
@@ -298,6 +336,31 @@ function AuthenticatedWorkspace({ user }: { user: User }) {
       });
     });
     setNotice({ kind: "success", message: "Proyecto actualizado y registrado en auditoría." });
+  }
+
+  async function discardProject(project: EnterpriseProject) {
+    if (!userId) throw new Error("Debes iniciar sesión para gestionar tus proyectos.");
+    const projectRef = doc(db, PROJECTS_COLLECTION, project.id);
+    await runTransaction(db, async (transaction) => {
+      const projectSnapshot = await transaction.get(projectRef);
+      if (!projectSnapshot.exists() || projectSnapshot.data().userId !== userId) {
+        throw new Error("No se encontró una oportunidad propia para descartar.");
+      }
+      const currentProject = projectFromSnapshot(projectSnapshot.id, projectSnapshot.data());
+      const storedStatus = projectSnapshot.data().status;
+      if (
+        currentProject.status !== "evaluation" ||
+        (storedStatus !== "evaluation" && storedStatus !== "in_progress") ||
+        currentProject.availableUnits !== 0
+      ) {
+        throw new Error("Solo se pueden descartar oportunidades en evaluación sin inventario activo.");
+      }
+      transaction.update(projectRef, {
+        status: "discarded",
+        updatedAt: serverTimestamp(),
+      });
+    });
+    setNotice({ kind: "success", message: "Oportunidad archivada como descartada; no se afectaron finanzas ni inventario." });
   }
 
   async function deleteProject(project: EnterpriseProject) {
@@ -325,11 +388,13 @@ function AuthenticatedWorkspace({ user }: { user: User }) {
         throw new Error("No se encontró un proyecto propio para eliminar.");
       }
       const currentProject = projectFromSnapshot(projectSnapshot.id, projectSnapshot.data());
+      const storedStatus = projectSnapshot.data().status;
       if (
-        (currentProject.status !== "evaluation" && currentProject.status !== "in_progress") ||
+        currentProject.status !== "evaluation" ||
+        (storedStatus !== "evaluation" && storedStatus !== "in_progress") ||
         currentProject.availableUnits !== 0
       ) {
-        throw new Error("No se pueden eliminar proyectos adquiridos, liquidados o con inventario activo.");
+        throw new Error("Solo se pueden eliminar oportunidades en evaluación sin inventario activo.");
       }
 
       transaction.set(auditRef, {
@@ -344,7 +409,7 @@ function AuthenticatedWorkspace({ user }: { user: User }) {
           condition: currentProject.condition,
           quantityPurchased: currentProject.quantityPurchased,
           salePriceUnit: currentProject.salePriceUnit,
-          status: currentProject.status,
+          status: storedStatus,
         },
         after: null,
         createdAt: serverTimestamp(),
@@ -365,8 +430,8 @@ function AuthenticatedWorkspace({ user }: { user: User }) {
         throw new Error("No se encontró un proyecto propio para adquirir.");
       }
       const currentProject = projectFromSnapshot(projectSnapshot.id, projectSnapshot.data());
-      if (currentProject.status !== "in_progress") {
-        throw new Error("Solo los proyectos En Proceso pueden registrarse como adquiridos.");
+      if (currentProject.status !== "evaluation") {
+        throw new Error("Solo las oportunidades en evaluación pueden registrarse como adquiridas.");
       }
       const acquisitionMinor = toMinorUnits(currentProject.purchaseTotal);
       if (
@@ -540,8 +605,8 @@ function AuthenticatedWorkspace({ user }: { user: User }) {
   const activeProjects = projects
     .filter((project) => project.status === "purchased" && project.availableUnits > 0)
     .sort((a, b) => a.name.localeCompare(b.name, "es"));
-  const liquidatedProjects = projects
-    .filter((project) => project.status === "liquidation")
+  const archivedProjects = projects
+    .filter((project) => project.status === "discarded" || (project.status === "purchased" && project.availableUnits === 0))
     .sort((a, b) => a.name.localeCompare(b.name, "es"));
   const projectById = new Map(projects.map((project) => [project.id, project]));
   const salesForExport = sales.map((sale) => {
@@ -633,8 +698,8 @@ function AuthenticatedWorkspace({ user }: { user: User }) {
             <ProjectsTab
               loading={loading}
               onAcquire={acquireProject}
-              onAdvance={advanceProject}
               onCreate={createProject}
+              onDiscard={discardProject}
               onDelete={deleteProject}
               onEdit={editProject}
               projects={projects}
@@ -648,7 +713,7 @@ function AuthenticatedWorkspace({ user }: { user: User }) {
               allProjects={projects}
               loading={loading}
               onExportSuccess={() => setNotice({ kind: "success", message: "Historial de ventas exportado en Excel." })}
-              projects={liquidatedProjects}
+              projects={archivedProjects}
               sales={salesForExport}
               salesError={salesError}
               salesLoading={salesLoading}

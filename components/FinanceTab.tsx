@@ -23,6 +23,7 @@ import {
 } from "@/lib/enterprise";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import type { ExcelColumn } from "@/lib/exportExcel";
+import PaginationControls, { usePagination } from "@/components/PaginationControls";
 
 type FinanceTabProps = {
   balances: Record<Currency, number>;
@@ -85,6 +86,7 @@ export default function FinanceTab({
     () => entries.filter((entry) => categoryFilter === "all" || entry.category === categoryFilter),
     [categoryFilter, entries],
   );
+  const pagination = usePagination(filteredEntries);
 
   function handleCapitalSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -334,7 +336,7 @@ export default function FinanceTab({
           </div>
         ) : (
           <div className="mt-4 divide-y divide-white/10 border-y border-white/10">
-            {filteredEntries.map((entry) => {
+            {pagination.pageItems.map((entry) => {
               const isGain = entry.category === "gain";
               const signedAmount = formatMinorMoney(entry.amountMinor, entry.currency);
               return (
@@ -357,6 +359,17 @@ export default function FinanceTab({
               );
             })}
           </div>
+        )}
+        {!loading && filteredEntries.length > 0 && (
+          <PaginationControls
+            currentPage={pagination.currentPage}
+            label="movimientos financieros"
+            onPageChange={pagination.setPage}
+            onPageSizeChange={pagination.changePageSize}
+            pageCount={pagination.pageCount}
+            pageSize={pagination.pageSize}
+            totalItems={filteredEntries.length}
+          />
         )}
       </div>
 

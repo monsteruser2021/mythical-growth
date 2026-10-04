@@ -16,6 +16,7 @@ import SearchAndFilters, {
 import { useMemo, useState } from "react";
 import ProfitBadge from "@/components/ProfitBadge";
 import ConditionBadge from "@/components/ConditionBadge";
+import PaginationControls, { usePagination } from "@/components/PaginationControls";
 
 type HistoryTabProps = {
   projects: EnterpriseProject[];
@@ -70,11 +71,11 @@ export default function HistoryTab({
   onExportSuccess,
 }: HistoryTabProps) {
   const mobilized = splitCurrencyTotals(
-    allProjects.filter((project) => project.status === "purchased" || project.status === "liquidation"),
+    allProjects.filter((project) => project.status === "purchased"),
     (project) => project.purchaseTotal,
   );
   const activeStock = splitCurrencyTotals(
-    allProjects.filter((project) => project.status === "purchased"),
+    allProjects.filter((project) => project.status === "purchased" && project.availableUnits > 0),
     (project) => project.availableUnits * project.unitCost,
   );
   const netProfit = splitCurrencyTotals(allProjects, (project) => project.netProfit);
@@ -113,6 +114,8 @@ export default function HistoryTab({
       return matchesSearch && matchesCondition && matchesCurrency && matchesMonth;
     });
   }, [condition, currency, latestSaleByProject, month, projects, search]);
+  const projectPagination = usePagination(matchingProjects);
+  const salesPagination = usePagination(matchingSales);
 
   const indicators = [
     { label: "Capital movilizado histórico", icon: Coins, totals: mobilized },
@@ -128,7 +131,7 @@ export default function HistoryTab({
             <Archive aria-hidden="true" className="size-5" />
           </span>
           <div>
-            <h2 className="text-lg font-semibold text-white" id="history-heading">Historial y liquidados</h2>
+            <h2 className="text-lg font-semibold text-white" id="history-heading">Historial y archivados</h2>
             <p className="mt-1 text-sm text-slate-400">Cierre de lotes y resultados financieros realizados.</p>
           </div>
         </div>
@@ -173,7 +176,7 @@ export default function HistoryTab({
       </div>
 
       <div className="mb-4 flex items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold text-slate-200">Lotes cerrados</h3>
+        <h3 className="text-sm font-semibold text-slate-200">Lotes finalizados o descartados</h3>
         <span className="text-xs text-slate-500">{matchingProjects.length} de {projects.length} registros</span>
       </div>
 
@@ -182,8 +185,8 @@ export default function HistoryTab({
       ) : projects.length === 0 ? (
         <div className="border-y border-white/10 py-12 text-center">
           <ChartNoAxesCombined aria-hidden="true" className="mx-auto size-8 text-slate-600" />
-          <p className="mt-3 text-sm font-medium text-slate-300">Todavía no hay proyectos liquidados</p>
-          <p className="mt-1 text-xs text-slate-500">Los lotes aparecerán aquí cuando se venda la última unidad.</p>
+          <p className="mt-3 text-sm font-medium text-slate-300">Todavía no hay proyectos archivados</p>
+          <p className="mt-1 text-xs text-slate-500">Los lotes aparecerán aquí al vender todo el stock o descartar una oportunidad.</p>
         </div>
       ) : matchingProjects.length === 0 ? (
         <div className="border-y border-white/10 py-12 text-center">
@@ -198,7 +201,7 @@ export default function HistoryTab({
         </div>
       ) : (
         <div className="divide-y divide-white/10 border-y border-white/10">
-          {matchingProjects.map((project) => {
+          {projectPagination.pageItems.map((project) => {
             const profitability = project.capitalRecovered > 0
               ? (project.netProfit / project.capitalRecovered) * 100
               : 0;
@@ -216,10 +219,16 @@ export default function HistoryTab({
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="rounded-full border border-slate-700 bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-slate-300">
-                      Liquidado
+                    <span className={`rounded-full border px-2.5 py-1 text-[11px] font-medium ${
+                      project.status === "discarded"
+                        ? "border-slate-600 bg-slate-900 text-slate-300"
+                        : "border-purple-400/20 bg-purple-400/5 text-purple-200"
+                    }`}>
+                      {project.status === "discarded" ? "Descartado" : "Adquirido / Comprado · Vendido"}
                     </span>
-                    <ProfitBadge capitalRecovered={project.capitalRecovered} netProfit={project.netProfit} />
+                    {project.status === "purchased" && (
+                      <ProfitBadge capitalRecovered={project.capitalRecovered} netProfit={project.netProfit} />
+                    )}
                   </div>
                 </div>
 
@@ -248,6 +257,17 @@ export default function HistoryTab({
           })}
         </div>
       )}
+      {!loading && matchingProjects.length > 0 && (
+        <PaginationControls
+          currentPage={projectPagination.currentPage}
+          label="proyectos archivados"
+          onPageChange={projectPagination.setPage}
+          onPageSizeChange={projectPagination.changePageSize}
+          pageCount={projectPagination.pageCount}
+          pageSize={projectPagination.pageSize}
+          totalItems={matchingProjects.length}
+        />
+      )}
 
       <div className="mt-9">
         <div className="mb-4 flex items-center justify-between gap-3">
@@ -262,7 +282,7 @@ export default function HistoryTab({
           </p>
         ) : (
           <div className="divide-y divide-white/10 border-y border-white/10">
-            {matchingSales.map((sale) => (
+            {salesPagination.pageItems.map((sale) => (
               <article className="flex flex-wrap items-center justify-between gap-3 py-4" key={sale.id}>
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
@@ -282,6 +302,17 @@ export default function HistoryTab({
               </article>
             ))}
           </div>
+        )}
+        {!salesLoading && matchingSales.length > 0 && (
+          <PaginationControls
+            currentPage={salesPagination.currentPage}
+            label="ventas registradas"
+            onPageChange={salesPagination.setPage}
+            onPageSizeChange={salesPagination.changePageSize}
+            pageCount={salesPagination.pageCount}
+            pageSize={salesPagination.pageSize}
+            totalItems={matchingSales.length}
+          />
         )}
       </div>
     </section>

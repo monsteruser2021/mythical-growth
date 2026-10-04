@@ -85,7 +85,7 @@ export async function processSaleAndSyncFinance(
       totalRevenue: fromMinorUnits(toMinorUnits(current.totalRevenue) + revenueMinor),
       capitalRecovered: fromMinorUnits(toMinorUnits(current.capitalRecovered) + capitalRecoveredMinor),
       netProfit: fromMinorUnits(toMinorUnits(current.netProfit) + netProfitMinor),
-      status: remainingUnits === 0 ? "liquidation" : "purchased",
+      status: "purchased",
       updatedAt: serverTimestamp(),
     });
     transaction.set(saleRef, {

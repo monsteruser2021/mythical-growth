@@ -67,12 +67,7 @@ service cloud.firestore {
       let changed = request.resource.data.diff(resource.data).affectedKeys();
 
       return (
-          resource.data.status == 'evaluation'
-          && request.resource.data.status == 'in_progress'
-          && changed.hasOnly(['status', 'updatedAt'])
-        )
-        || (
-          resource.data.status == 'in_progress'
+          resource.data.status in ['evaluation', 'in_progress']
           && request.resource.data.status == 'purchased'
           && changed.hasOnly(['status', 'availableUnits', 'unitCost', 'updatedAt'])
           && request.resource.data.availableUnits == resource.data.quantityPurchased
@@ -80,7 +75,13 @@ service cloud.firestore {
         )
         || (
           resource.data.status in ['evaluation', 'in_progress']
-          && request.resource.data.status in ['evaluation', 'in_progress']
+          && request.resource.data.status == 'discarded'
+          && changed.hasOnly(['status', 'updatedAt'])
+          && request.resource.data.availableUnits == 0
+        )
+        || (
+          resource.data.status in ['evaluation', 'in_progress']
+          && request.resource.data.status == 'evaluation'
           && changed.hasOnly([
             'name',
             'purchaseTotal',
@@ -110,8 +111,8 @@ service cloud.firestore {
           && validProjectEditAudit(projectId)
         )
         || (
-          resource.data.status in ['purchased', 'active']
-          && request.resource.data.status in ['purchased', 'liquidation']
+          resource.data.status in ['purchased', 'active', 'liquidation']
+          && request.resource.data.status == 'purchased'
           && changed.hasOnly([
             'availableUnits',
             'salePriceUnit',
@@ -124,8 +125,6 @@ service cloud.firestore {
           && request.resource.data.availableUnits is int
           && request.resource.data.availableUnits >= 0
           && request.resource.data.availableUnits <= resource.data.availableUnits
-          && (request.resource.data.status != 'purchased' || request.resource.data.availableUnits > 0)
-          && (request.resource.data.status != 'liquidation' || request.resource.data.availableUnits == 0)
         );
     }
 
@@ -140,6 +139,7 @@ service cloud.firestore {
       allow delete: if owns(resource.data)
         && resource.data.status in ['evaluation', 'in_progress']
         && resource.data.availableUnits == 0
+        && !exists(/databases/$(database)/documents/enterprise_financial_ledger/acquisition_$(projectId))
         && existsAfter(/databases/$(database)/documents/audit_logs/DELETE_PROJECT_$(projectId))
         && getAfter(/databases/$(database)/documents/audit_logs/DELETE_PROJECT_$(projectId)).data.userId
           == request.auth.uid
@@ -165,7 +165,7 @@ service cloud.firestore {
           == null;
 
       match /sales/{saleId} {
-        allow read: if owns(resource.data);
+        allow read: if owns(resource.data) || ownsProject(projectId);
         allow create: if owns(request.resource.data)
           && ownsProject(projectId)
           && get(/databases/$(database)/documents/enterprise_projects/$(projectId)).data.status

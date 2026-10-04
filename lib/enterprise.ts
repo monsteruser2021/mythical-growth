@@ -8,12 +8,11 @@ export function balanceDocumentId(userId: string, currency: Currency) {
 
 export type Currency = "Bs" | "$";
 export type ProductCondition = "Nuevo" | "Usado";
-export type ProjectStatus = "evaluation" | "in_progress" | "purchased" | "liquidation";
+export type ProjectStatus = "evaluation" | "purchased" | "discarded";
 export const PROJECT_STATUSES = [
   "evaluation",
-  "in_progress",
   "purchased",
-  "liquidation",
+  "discarded",
 ] as const satisfies readonly ProjectStatus[];
 export type WorkspaceTab = "projects" | "inventory" | "history" | "finance";
 export type FinanceCategory = "investment" | "gain";
@@ -60,11 +59,7 @@ export type ProjectDraft = {
   salePriceUnit: number;
 };
 
-export type EditableProjectStatus = Extract<ProjectStatus, "evaluation" | "in_progress">;
-
-export type ProjectEditInput = ProjectDraft & {
-  status: EditableProjectStatus;
-};
+export type ProjectEditInput = ProjectDraft;
 
 export type EnterpriseProject = ProjectDraft & {
   id: string;
@@ -78,9 +73,8 @@ export type EnterpriseProject = ProjectDraft & {
 
 export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
   evaluation: "En Evaluación",
-  in_progress: "En Proceso",
-  purchased: "Comprado / Adquirido",
-  liquidation: "Vendido / Liquidado",
+  purchased: "Adquirido / Comprado",
+  discarded: "Descartado",
 };
 
 export type SaleInput = {
@@ -156,13 +150,11 @@ export function projectFromSnapshot(
     capitalRecovered: numberValue(data.capitalRecovered),
     netProfit: numberValue(data.netProfit),
     status:
-      data.status === "liquidation"
-        ? "liquidation"
-        : data.status === "evaluation"
+      data.status === "discarded"
+        ? "discarded"
+        : data.status === "evaluation" || data.status === "in_progress"
           ? "evaluation"
-          : data.status === "in_progress"
-            ? "in_progress"
-            : "purchased",
+          : "purchased",
   };
 }
 
