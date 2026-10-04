@@ -26,6 +26,12 @@ Enterprise projects, sales, and financial ledger entries are owned by the authen
 
 Existing documents without `userId` remain inaccessible under the ownership rules. Assign them to verified owners through a trusted migration before expecting them to appear; do not infer ownership from email or assign shared records to an arbitrary account.
 
+## Pipeline statuses
+
+Pipeline projects begin in `evaluation` with zero available inventory and no financial ledger or balance mutation. Advancing to `in_progress` also has no financial effect. Only confirming acquisition moves a project to `purchased`, decrements the user's balance, records the acquisition, and adds the units to active inventory in one Firestore transaction. Selling the final units moves it to `liquidation`. Historical committed-capital totals include purchased and liquidated projects, never evaluation or in-progress opportunities. Legacy `active` documents are read as `purchased`.
+
+Projects can only be edited or deleted while in `evaluation` or `in_progress`, with zero active inventory and no sales or financial ledger entries. Edit and delete operations are atomic with immutable `UPDATE_PROJECT` and `DELETE_PROJECT` audit records; Firestore rules reject edits or deletions outside those initial stages.
+
 ## Excel reports
 
 The sales history and financial ledger exports are real `.xlsx` workbooks generated in the browser with SheetJS. The history report exports the active sales filters; the finance report exports the selected category filter.

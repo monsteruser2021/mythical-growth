@@ -43,7 +43,9 @@ export async function processSaleAndSyncFinance(
     const current = projectFromSnapshot(projectSnapshot.id, projectData);
     const balanceRef = doc(db, BALANCES_COLLECTION, balanceDocumentId(userId, current.currency));
     const balanceSnapshot = await transaction.get(balanceRef);
-    if (current.status !== "active") throw new Error("Este lote ya fue liquidado.");
+    if (current.status !== "purchased") {
+      throw new Error("Solo se pueden vender proyectos adquiridos y presentes en el inventario.");
+    }
     if (!Number.isInteger(sale.quantity) || sale.quantity < 1 || sale.quantity > current.availableUnits) {
       throw new Error("El stock cambió. Actualiza la cantidad e inténtalo otra vez.");
     }
@@ -83,7 +85,7 @@ export async function processSaleAndSyncFinance(
       totalRevenue: fromMinorUnits(toMinorUnits(current.totalRevenue) + revenueMinor),
       capitalRecovered: fromMinorUnits(toMinorUnits(current.capitalRecovered) + capitalRecoveredMinor),
       netProfit: fromMinorUnits(toMinorUnits(current.netProfit) + netProfitMinor),
-      status: remainingUnits === 0 ? "liquidation" : "active",
+      status: remainingUnits === 0 ? "liquidation" : "purchased",
       updatedAt: serverTimestamp(),
     });
     transaction.set(saleRef, {

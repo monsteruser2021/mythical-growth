@@ -16,15 +16,160 @@ service cloud.firestore {
           == request.auth.uid;
     }
 
+    function validAcquisition(projectId) {
+      let acquisitionPath = /databases/$(database)/documents/enterprise_financial_ledger/acquisition_$(projectId);
+      let balanceId = request.auth.uid + (resource.data.currency == 'Bs' ? '_VES' : '_USD');
+      let balancePath = /databases/$(database)/documents/enterprise_financial_balances/$(balanceId);
+      let acquisition = getAfter(acquisitionPath).data;
+      let balanceBefore = get(balancePath).data;
+      let balanceAfter = getAfter(balancePath).data;
+
+      return (
+        existsAfter(acquisitionPath)
+        && acquisition.userId == request.auth.uid
+        && acquisition.projectId == projectId
+        && acquisition.operation == 'project_acquisition'
+        && acquisition.currency == resource.data.currency
+        && acquisition.amountMinor >= -(resource.data.purchaseTotal * 100) - 0.5
+        && acquisition.amountMinor <= -(resource.data.purchaseTotal * 100) + 0.5
+        && balanceAfter.amountMinor == balanceBefore.amountMinor + acquisition.amountMinor
+      );
+    }
+
+    function validProjectEditAudit(projectId) {
+      let auditPath = /databases/$(database)/documents/audit_logs/$(request.resource.data.lastAuditId);
+      let audit = getAfter(auditPath).data;
+
+      return (
+        request.resource.data.lastAuditId is string
+        && existsAfter(auditPath)
+        && audit.userId == request.auth.uid
+        && audit.action == 'UPDATE_PROJECT'
+        && audit.projectId == projectId
+        && audit.before.name == resource.data.name
+        && audit.before.purchaseTotal == resource.data.purchaseTotal
+        && audit.before.currency == resource.data.currency
+        && audit.before.condition == resource.data.condition
+        && audit.before.quantityPurchased == resource.data.quantityPurchased
+        && audit.before.salePriceUnit == resource.data.salePriceUnit
+        && audit.before.status == resource.data.status
+        && audit.after.name == request.resource.data.name
+        && audit.after.purchaseTotal == request.resource.data.purchaseTotal
+        && audit.after.currency == request.resource.data.currency
+        && audit.after.condition == request.resource.data.condition
+        && audit.after.quantityPurchased == request.resource.data.quantityPurchased
+        && audit.after.salePriceUnit == request.resource.data.salePriceUnit
+        && audit.after.status == request.resource.data.status
+      );
+    }
+
+    function validProjectUpdate(projectId) {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+
+      return (
+          resource.data.status == 'evaluation'
+          && request.resource.data.status == 'in_progress'
+          && changed.hasOnly(['status', 'updatedAt'])
+        )
+        || (
+          resource.data.status == 'in_progress'
+          && request.resource.data.status == 'purchased'
+          && changed.hasOnly(['status', 'availableUnits', 'unitCost', 'updatedAt'])
+          && request.resource.data.availableUnits == resource.data.quantityPurchased
+          && validAcquisition(projectId)
+        )
+        || (
+          resource.data.status in ['evaluation', 'in_progress']
+          && request.resource.data.status in ['evaluation', 'in_progress']
+          && changed.hasOnly([
+            'name',
+            'purchaseTotal',
+            'currency',
+            'condition',
+            'quantityPurchased',
+            'salePriceUnit',
+            'unitCost',
+            'status',
+            'lastAuditId',
+            'updatedAt'
+          ])
+          && request.resource.data.availableUnits == 0
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.name.size() <= 100
+          && request.resource.data.purchaseTotal is number
+          && request.resource.data.purchaseTotal > 0
+          && request.resource.data.currency in ['Bs', '$']
+          && request.resource.data.condition in ['Nuevo', 'Usado']
+          && request.resource.data.quantityPurchased is int
+          && request.resource.data.quantityPurchased > 0
+          && request.resource.data.salePriceUnit is number
+          && request.resource.data.salePriceUnit > 0
+          && request.resource.data.unitCost
+            == request.resource.data.purchaseTotal / request.resource.data.quantityPurchased
+          && validProjectEditAudit(projectId)
+        )
+        || (
+          resource.data.status in ['purchased', 'active']
+          && request.resource.data.status in ['purchased', 'liquidation']
+          && changed.hasOnly([
+            'availableUnits',
+            'salePriceUnit',
+            'totalRevenue',
+            'capitalRecovered',
+            'netProfit',
+            'status',
+            'updatedAt'
+          ])
+          && request.resource.data.availableUnits is int
+          && request.resource.data.availableUnits >= 0
+          && request.resource.data.availableUnits <= resource.data.availableUnits
+          && (request.resource.data.status != 'purchased' || request.resource.data.availableUnits > 0)
+          && (request.resource.data.status != 'liquidation' || request.resource.data.availableUnits == 0)
+        );
+    }
+
     match /enterprise_projects/{projectId} {
       allow read: if owns(resource.data);
-      allow create: if owns(request.resource.data);
-      allow update: if owns(resource.data) && owns(request.resource.data);
-      allow delete: if owns(resource.data);
+      allow create: if owns(request.resource.data)
+        && request.resource.data.status == 'evaluation'
+        && request.resource.data.availableUnits == 0;
+      allow update: if owns(resource.data)
+        && owns(request.resource.data)
+        && validProjectUpdate(projectId);
+      allow delete: if owns(resource.data)
+        && resource.data.status in ['evaluation', 'in_progress']
+        && resource.data.availableUnits == 0
+        && existsAfter(/databases/$(database)/documents/audit_logs/DELETE_PROJECT_$(projectId))
+        && getAfter(/databases/$(database)/documents/audit_logs/DELETE_PROJECT_$(projectId)).data.userId
+          == request.auth.uid
+        && getAfter(/databases/$(database)/documents/audit_logs/DELETE_PROJECT_$(projectId)).data.action
+          == 'DELETE_PROJECT'
+        && getAfter(/databases/$(database)/documents/audit_logs/DELETE_PROJECT_$(projectId)).data.projectId
+          == projectId
+        && getAfter(/databases/$(database)/documents/audit_logs/DELETE_PROJECT_$(projectId)).data.before.name
+          == resource.data.name
+        && getAfter(/databases/$(database)/documents/audit_logs/DELETE_PROJECT_$(projectId)).data.before.purchaseTotal
+          == resource.data.purchaseTotal
+        && getAfter(/databases/$(database)/documents/audit_logs/DELETE_PROJECT_$(projectId)).data.before.currency
+          == resource.data.currency
+        && getAfter(/databases/$(database)/documents/audit_logs/DELETE_PROJECT_$(projectId)).data.before.condition
+          == resource.data.condition
+        && getAfter(/databases/$(database)/documents/audit_logs/DELETE_PROJECT_$(projectId)).data.before.quantityPurchased
+          == resource.data.quantityPurchased
+        && getAfter(/databases/$(database)/documents/audit_logs/DELETE_PROJECT_$(projectId)).data.before.salePriceUnit
+          == resource.data.salePriceUnit
+        && getAfter(/databases/$(database)/documents/audit_logs/DELETE_PROJECT_$(projectId)).data.before.status
+          == resource.data.status
+        && getAfter(/databases/$(database)/documents/audit_logs/DELETE_PROJECT_$(projectId)).data.after
+          == null;
 
       match /sales/{saleId} {
         allow read: if owns(resource.data);
-        allow create: if owns(request.resource.data) && ownsProject(projectId);
+        allow create: if owns(request.resource.data)
+          && ownsProject(projectId)
+          && get(/databases/$(database)/documents/enterprise_projects/$(projectId)).data.status
+            in ['purchased', 'active'];
         allow update: if owns(resource.data)
           && owns(request.resource.data)
           && ownsProject(projectId);
@@ -55,7 +200,59 @@ service cloud.firestore {
 
     match /audit_logs/{logId} {
       allow read: if owns(resource.data);
-      allow create: if owns(request.resource.data);
+      allow create: if owns(request.resource.data)
+        && request.resource.data.keys().hasOnly([
+          'userId',
+          'action',
+          'projectId',
+          'projectName',
+          'before',
+          'after',
+          'createdAt'
+        ])
+        && request.resource.data.action in ['UPDATE_PROJECT', 'DELETE_PROJECT']
+        && request.resource.data.projectId is string
+        && request.resource.data.projectName is string
+        && request.resource.data.createdAt == request.time
+        && (
+          (
+            request.resource.data.action == 'UPDATE_PROJECT'
+            && existsAfter(/databases/$(database)/documents/enterprise_projects/$(request.resource.data.projectId))
+            && getAfter(/databases/$(database)/documents/enterprise_projects/$(request.resource.data.projectId)).data.lastAuditId
+              == logId
+            && getAfter(/databases/$(database)/documents/enterprise_projects/$(request.resource.data.projectId)).data.userId
+              == request.auth.uid
+          )
+          || (
+            request.resource.data.action == 'DELETE_PROJECT'
+            && logId == 'DELETE_PROJECT_' + request.resource.data.projectId
+            && exists(/databases/$(database)/documents/enterprise_projects/$(request.resource.data.projectId))
+            && get(/databases/$(database)/documents/enterprise_projects/$(request.resource.data.projectId)).data.userId
+              == request.auth.uid
+            && request.resource.data.projectName
+              == get(/databases/$(database)/documents/enterprise_projects/$(request.resource.data.projectId)).data.name
+            && get(/databases/$(database)/documents/enterprise_projects/$(request.resource.data.projectId)).data.status
+              in ['evaluation', 'in_progress']
+            && get(/databases/$(database)/documents/enterprise_projects/$(request.resource.data.projectId)).data.availableUnits
+              == 0
+            && request.resource.data.before.name
+              == get(/databases/$(database)/documents/enterprise_projects/$(request.resource.data.projectId)).data.name
+            && request.resource.data.before.purchaseTotal
+              == get(/databases/$(database)/documents/enterprise_projects/$(request.resource.data.projectId)).data.purchaseTotal
+            && request.resource.data.before.currency
+              == get(/databases/$(database)/documents/enterprise_projects/$(request.resource.data.projectId)).data.currency
+            && request.resource.data.before.condition
+              == get(/databases/$(database)/documents/enterprise_projects/$(request.resource.data.projectId)).data.condition
+            && request.resource.data.before.quantityPurchased
+              == get(/databases/$(database)/documents/enterprise_projects/$(request.resource.data.projectId)).data.quantityPurchased
+            && request.resource.data.before.salePriceUnit
+              == get(/databases/$(database)/documents/enterprise_projects/$(request.resource.data.projectId)).data.salePriceUnit
+            && request.resource.data.before.status
+              == get(/databases/$(database)/documents/enterprise_projects/$(request.resource.data.projectId)).data.status
+            && request.resource.data.after == null
+            && !existsAfter(/databases/$(database)/documents/enterprise_projects/$(request.resource.data.projectId))
+          )
+        );
       allow update, delete: if false;
     }
   }

@@ -6,9 +6,11 @@ import {
   collection,
   collectionGroup,
   doc,
+  getDocs,
   onSnapshot,
   query,
   runTransaction,
+  setDoc,
   serverTimestamp,
   where,
 } from "firebase/firestore";
@@ -42,6 +44,7 @@ import {
   type CurrencyExchangeInput,
   type EnterpriseProject,
   type LedgerEntry,
+  type ProjectEditInput,
   type ProjectDraft,
   type SaleRecord,
   type SaleInput,
@@ -180,52 +183,238 @@ function AuthenticatedWorkspace({ user }: { user: User }) {
   async function createProject(project: ProjectDraft) {
     if (!userId) throw new Error("Debes iniciar sesión para gestionar tus proyectos.");
     const projectRef = doc(collection(db, PROJECTS_COLLECTION));
-    const ledgerRef = doc(collection(db, LEDGER_COLLECTION));
-    const balanceRef = doc(db, BALANCES_COLLECTION, balanceDocumentId(userId, project.currency));
     const acquisitionMinor = toMinorUnits(project.purchaseTotal);
-    if (!Number.isSafeInteger(acquisitionMinor) || acquisitionMinor < 1) {
-      throw new Error("El costo de adquisición supera el importe admitido.");
+    const salePriceMinor = toMinorUnits(project.salePriceUnit);
+    if (
+      !Number.isSafeInteger(acquisitionMinor) ||
+      acquisitionMinor < 1 ||
+      !Number.isInteger(project.quantityPurchased) ||
+      project.quantityPurchased < 1 ||
+      !Number.isSafeInteger(salePriceMinor) ||
+      salePriceMinor < 1
+    ) {
+      throw new Error("El costo, las unidades o el precio estimado no son válidos.");
+    }
+
+    await setDoc(projectRef, {
+      ...project,
+      userId,
+      unitCost: project.purchaseTotal / project.quantityPurchased,
+      availableUnits: 0,
+      totalRevenue: 0,
+      capitalRecovered: 0,
+      netProfit: 0,
+      status: "evaluation",
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    setNotice({ kind: "success", message: "Oportunidad guardada en evaluación; no se comprometió capital." });
+  }
+
+  async function advanceProject(project: EnterpriseProject) {
+    if (!userId) throw new Error("Debes iniciar sesión para gestionar tus proyectos.");
+    const projectRef = doc(db, PROJECTS_COLLECTION, project.id);
+    await runTransaction(db, async (transaction) => {
+      const projectSnapshot = await transaction.get(projectRef);
+      if (!projectSnapshot.exists() || projectSnapshot.data().userId !== userId) {
+        throw new Error("No se encontró una oportunidad propia para avanzar.");
+      }
+      if (projectSnapshot.data().status !== "evaluation") {
+        throw new Error("Solo las oportunidades en evaluación pueden avanzar a En Proceso.");
+      }
+      transaction.update(projectRef, {
+        status: "in_progress",
+        updatedAt: serverTimestamp(),
+      });
+    });
+    setNotice({ kind: "success", message: "Proyecto avanzado a En Proceso; no se comprometió capital." });
+  }
+
+  async function editProject(project: EnterpriseProject, input: ProjectEditInput) {
+    if (!userId) throw new Error("Debes iniciar sesión para gestionar tus proyectos.");
+    const purchaseTotalMinor = toMinorUnits(input.purchaseTotal);
+    const salePriceMinor = toMinorUnits(input.salePriceUnit);
+    if (
+      !input.name.trim() ||
+      input.name.trim().length > 100 ||
+      !Number.isSafeInteger(purchaseTotalMinor) ||
+      purchaseTotalMinor < 1 ||
+      !Number.isInteger(input.quantityPurchased) ||
+      input.quantityPurchased < 1 ||
+      !Number.isSafeInteger(salePriceMinor) ||
+      salePriceMinor < 1
+    ) {
+      throw new Error("Revisa el nombre, costo, cantidad y precio de venta del proyecto.");
+    }
+
+    const projectRef = doc(db, PROJECTS_COLLECTION, project.id);
+    const auditRef = doc(collection(db, "audit_logs"));
+    await runTransaction(db, async (transaction) => {
+      const projectSnapshot = await transaction.get(projectRef);
+      if (!projectSnapshot.exists() || projectSnapshot.data().userId !== userId) {
+        throw new Error("No se encontró un proyecto propio para editar.");
+      }
+      const currentProject = projectFromSnapshot(projectSnapshot.id, projectSnapshot.data());
+      if (
+        (currentProject.status !== "evaluation" && currentProject.status !== "in_progress") ||
+        currentProject.availableUnits !== 0
+      ) {
+        throw new Error("Solo se pueden editar proyectos en evaluación o en proceso sin inventario activo.");
+      }
+
+      const before = {
+        name: currentProject.name,
+        purchaseTotal: currentProject.purchaseTotal,
+        currency: currentProject.currency,
+        condition: currentProject.condition,
+        quantityPurchased: currentProject.quantityPurchased,
+        salePriceUnit: currentProject.salePriceUnit,
+        status: currentProject.status,
+      };
+      const after = {
+        name: input.name.trim(),
+        purchaseTotal: input.purchaseTotal,
+        currency: input.currency,
+        condition: input.condition,
+        quantityPurchased: input.quantityPurchased,
+        salePriceUnit: input.salePriceUnit,
+        status: input.status,
+      };
+
+      transaction.update(projectRef, {
+        ...after,
+        unitCost: input.purchaseTotal / input.quantityPurchased,
+        lastAuditId: auditRef.id,
+        updatedAt: serverTimestamp(),
+      });
+      transaction.set(auditRef, {
+        userId,
+        action: "UPDATE_PROJECT",
+        projectId: projectRef.id,
+        projectName: currentProject.name,
+        before,
+        after,
+        createdAt: serverTimestamp(),
+      });
+    });
+    setNotice({ kind: "success", message: "Proyecto actualizado y registrado en auditoría." });
+  }
+
+  async function deleteProject(project: EnterpriseProject) {
+    if (!userId) throw new Error("Debes iniciar sesión para gestionar tus proyectos.");
+    const projectRef = doc(db, PROJECTS_COLLECTION, project.id);
+    const auditRef = doc(db, "audit_logs", `DELETE_PROJECT_${project.id}`);
+    const [salesSnapshot, ledgerSnapshot] = await Promise.all([
+      getDocs(query(
+        collection(db, PROJECTS_COLLECTION, project.id, "sales"),
+        where("userId", "==", userId),
+      )),
+      getDocs(query(
+        collection(db, LEDGER_COLLECTION),
+        where("projectId", "==", project.id),
+        where("userId", "==", userId),
+      )),
+    ]);
+    if (!salesSnapshot.empty || !ledgerSnapshot.empty) {
+      throw new Error("No se puede eliminar un proyecto que ya tiene movimientos de ventas o financieros.");
     }
 
     await runTransaction(db, async (transaction) => {
+      const projectSnapshot = await transaction.get(projectRef);
+      if (!projectSnapshot.exists() || projectSnapshot.data().userId !== userId) {
+        throw new Error("No se encontró un proyecto propio para eliminar.");
+      }
+      const currentProject = projectFromSnapshot(projectSnapshot.id, projectSnapshot.data());
+      if (
+        (currentProject.status !== "evaluation" && currentProject.status !== "in_progress") ||
+        currentProject.availableUnits !== 0
+      ) {
+        throw new Error("No se pueden eliminar proyectos adquiridos, liquidados o con inventario activo.");
+      }
+
+      transaction.set(auditRef, {
+        userId,
+        action: "DELETE_PROJECT",
+        projectId: projectRef.id,
+        projectName: currentProject.name,
+        before: {
+          name: currentProject.name,
+          purchaseTotal: currentProject.purchaseTotal,
+          currency: currentProject.currency,
+          condition: currentProject.condition,
+          quantityPurchased: currentProject.quantityPurchased,
+          salePriceUnit: currentProject.salePriceUnit,
+          status: currentProject.status,
+        },
+        after: null,
+        createdAt: serverTimestamp(),
+      });
+      transaction.delete(projectRef);
+    });
+    setNotice({ kind: "success", message: "Proyecto eliminado y registrado en auditoría." });
+  }
+
+  async function acquireProject(project: EnterpriseProject) {
+    if (!userId) throw new Error("Debes iniciar sesión para gestionar tus proyectos.");
+    const projectRef = doc(db, PROJECTS_COLLECTION, project.id);
+    const ledgerRef = doc(db, LEDGER_COLLECTION, `acquisition_${project.id}`);
+
+    await runTransaction(db, async (transaction) => {
+      const projectSnapshot = await transaction.get(projectRef);
+      if (!projectSnapshot.exists() || projectSnapshot.data().userId !== userId) {
+        throw new Error("No se encontró un proyecto propio para adquirir.");
+      }
+      const currentProject = projectFromSnapshot(projectSnapshot.id, projectSnapshot.data());
+      if (currentProject.status !== "in_progress") {
+        throw new Error("Solo los proyectos En Proceso pueden registrarse como adquiridos.");
+      }
+      const acquisitionMinor = toMinorUnits(currentProject.purchaseTotal);
+      if (
+        !Number.isSafeInteger(acquisitionMinor) ||
+        acquisitionMinor < 1 ||
+        !Number.isInteger(currentProject.quantityPurchased) ||
+        currentProject.quantityPurchased < 1 ||
+        !Number.isSafeInteger(toMinorUnits(currentProject.salePriceUnit)) ||
+        toMinorUnits(currentProject.salePriceUnit) < 1
+      ) {
+        throw new Error("Actualiza el costo, las unidades y el precio estimado antes de registrar la adquisición.");
+      }
+      const balanceRef = doc(
+        db,
+        BALANCES_COLLECTION,
+        balanceDocumentId(userId, currentProject.currency),
+      );
       const balanceSnapshot = await transaction.get(balanceRef);
       const currentBalance = readBalanceAmount(balanceSnapshot.data());
       if (currentBalance < acquisitionMinor) {
-        throw new Error(`Fondos insuficientes en ${project.currency}. Registra o convierte capital antes de activar este proyecto.`);
+        throw new Error(`Fondos insuficientes en ${currentProject.currency}. Registra o convierte capital antes de adquirir este proyecto.`);
       }
 
-      transaction.set(projectRef, {
-        ...project,
-        userId,
-        unitCost: project.purchaseTotal / project.quantityPurchased,
-        availableUnits: project.quantityPurchased,
-        totalRevenue: 0,
-        capitalRecovered: 0,
-        netProfit: 0,
-        status: "active",
-        createdAt: serverTimestamp(),
+      transaction.update(projectRef, {
+        unitCost: currentProject.purchaseTotal / currentProject.quantityPurchased,
+        availableUnits: currentProject.quantityPurchased,
+        status: "purchased",
         updatedAt: serverTimestamp(),
       });
       transaction.set(ledgerRef, {
         userId,
         category: "investment",
         operation: "project_acquisition",
-        currency: project.currency,
+        currency: currentProject.currency,
         amountMinor: -acquisitionMinor,
-        description: `Adquisición · ${project.name}`,
+        description: `Adquisición · ${currentProject.name}`,
         projectId: projectRef.id,
         exchangeGroupId: null,
         createdAt: serverTimestamp(),
       });
       transaction.set(balanceRef, {
         userId,
-        currency: project.currency,
+        currency: currentProject.currency,
         amountMinor: currentBalance - acquisitionMinor,
         updatedAt: serverTimestamp(),
       });
     });
-    setNotice({ kind: "success", message: "Proyecto guardado y activado en inventario." });
-    setActiveTab("inventory");
+    setNotice({ kind: "success", message: "Adquisición registrada; el lote ya está disponible en Inventario Activo." });
   }
 
   async function registerSale(project: EnterpriseProject, sale: SaleInput) {
@@ -349,10 +538,10 @@ function AuthenticatedWorkspace({ user }: { user: User }) {
   }
 
   const activeProjects = projects
-    .filter((project) => project.status === "active" && project.availableUnits > 0)
+    .filter((project) => project.status === "purchased" && project.availableUnits > 0)
     .sort((a, b) => a.name.localeCompare(b.name, "es"));
   const liquidatedProjects = projects
-    .filter((project) => project.status === "liquidation" || project.availableUnits === 0)
+    .filter((project) => project.status === "liquidation")
     .sort((a, b) => a.name.localeCompare(b.name, "es"));
   const projectById = new Map(projects.map((project) => [project.id, project]));
   const salesForExport = sales.map((sale) => {
@@ -440,7 +629,17 @@ function AuthenticatedWorkspace({ user }: { user: User }) {
           role="tabpanel"
           tabIndex={0}
         >
-          {activeTab === "projects" && <ProjectsTab loading={loading} onCreate={createProject} projects={projects} />}
+          {activeTab === "projects" && (
+            <ProjectsTab
+              loading={loading}
+              onAcquire={acquireProject}
+              onAdvance={advanceProject}
+              onCreate={createProject}
+              onDelete={deleteProject}
+              onEdit={editProject}
+              projects={projects}
+            />
+          )}
           {activeTab === "inventory" && (
             <InventoryTab loading={loading} onSell={registerSale} projects={activeProjects} />
           )}

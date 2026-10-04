@@ -1,11 +1,17 @@
 "use client";
 
 import { Search, X } from "lucide-react";
-import type { Currency, ProductCondition } from "@/lib/enterprise";
+import {
+  PROJECT_STATUSES,
+  PROJECT_STATUS_LABELS,
+  type Currency,
+  type ProductCondition,
+  type ProjectStatus,
+} from "@/lib/enterprise";
 
 export type ConditionFilter = "all" | ProductCondition;
 export type CurrencyFilter = "all" | Currency;
-export type StatusFilter = "all" | "active" | "liquidation";
+export type StatusFilter = "all" | ProjectStatus;
 
 type SearchAndFiltersProps = {
   id: string;
@@ -101,8 +107,11 @@ export default function SearchAndFilters({
             value={status}
           >
             <option value="all">Todos</option>
-            <option value="active">Activo</option>
-            <option value="liquidation">Liquidado</option>
+            {PROJECT_STATUSES.map((projectStatus) => (
+              <option key={projectStatus} value={projectStatus}>
+                {PROJECT_STATUS_LABELS[projectStatus]}
+              </option>
+            ))}
           </select>
         </label>
       )}

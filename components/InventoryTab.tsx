@@ -72,7 +72,7 @@ export default function InventoryTab({ projects, loading, onSell }: InventoryTab
         <div className="border-y border-white/10 py-14 text-center">
           <PackageCheck aria-hidden="true" className="mx-auto size-8 text-slate-600" />
           <p className="mt-3 text-sm font-medium text-slate-300">No hay lotes con stock disponible</p>
-          <p className="mt-1 text-xs text-slate-500">Los proyectos activados aparecerán aquí.</p>
+          <p className="mt-1 text-xs text-slate-500">Los lotes aparecerán aquí cuando registres su adquisición formal.</p>
         </div>
       ) : filteredProjects.length === 0 ? (
         <div className="border-y border-white/10 py-12 text-center">

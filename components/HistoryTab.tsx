@@ -69,9 +69,12 @@ export default function HistoryTab({
   loading,
   onExportSuccess,
 }: HistoryTabProps) {
-  const mobilized = splitCurrencyTotals(allProjects, (project) => project.purchaseTotal);
+  const mobilized = splitCurrencyTotals(
+    allProjects.filter((project) => project.status === "purchased" || project.status === "liquidation"),
+    (project) => project.purchaseTotal,
+  );
   const activeStock = splitCurrencyTotals(
-    allProjects.filter((project) => project.status === "active"),
+    allProjects.filter((project) => project.status === "purchased"),
     (project) => project.availableUnits * project.unitCost,
   );
   const netProfit = splitCurrencyTotals(allProjects, (project) => project.netProfit);
